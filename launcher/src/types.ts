@@ -10,6 +10,7 @@ export interface LauncherState {
   githubOpened: boolean;
   xOpened: boolean;
   autoStart: boolean;
+  routingDisabled: boolean;
   keepRunningOnClose: boolean;
   showBrowserDuringTurns: boolean;
   browserInteractionMode: BrowserInteractionMode;
@@ -119,7 +120,17 @@ export interface LauncherSnapshot {
   update: UpdateState;
 }
 
+export interface RoutingStatus {
+  protocol: "codex-routing-v1";
+  enabled: boolean;
+  busy: boolean;
+  runtimeReady: boolean;
+  last: { ok: boolean; status: string; message?: string } | null;
+}
+
 export interface LauncherApi {
+  routingStatus(): Promise<RoutingStatus>;
+  setRouting(enabled: boolean): Promise<RoutingStatus>;
   snapshot(): Promise<LauncherSnapshot>;
   setLanguage(language: Language): Promise<LauncherState>;
   openSocial(target: "github" | "x"): Promise<LauncherState>;

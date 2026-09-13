@@ -102,7 +102,7 @@ test("packaged runtime is verified before launcher browser surfaces can bind por
 
 test("DEV launcher exposes its profile and supervises only its Full-mode MCP runtime", () => {
   assert.match(electronMain, /profile:\s*LAUNCHER_PROFILE\.kind/);
-  assert.match(electronMain, /if \(IS_DEV_PROFILE\) \{[\s\S]*?config\?\.mode === "full"[\s\S]*?runtimeSupervisor\.startIfConfigured\(\)[\s\S]*?\} else void \(async \(\) => \{/);
+  assert.match(electronMain, /if \(IS_DEV_PROFILE\) \{[\s\S]*?config\?\.mode === "full"[\s\S]*?runtimeSupervisor\.startIfConfigured\(\)[\s\S]*?\} else \{[\s\S]*?routingSwitch\.startup\(\)/);
   assert.match(electronMain, /await runtimeSupervisor\?\.shutdown\(\{ cancelActiveTurns: true, force: true \}\)/);
   assert.match(electronMain, /packaged:\s*app\.isPackaged && !IS_DEV_PROFILE/);
   assert.match(electronMain, /IS_DEV_PROFILE && !stateStore\.read\(\)\.onboardingComplete/);
@@ -240,15 +240,17 @@ test("MCP verification proves runtime health before checking the connector", () 
 
 test("saved ChatGPT authentication is refreshed before setup is presented", () => {
   assert.match(electronMain, /browserHost\.refreshAuthentication\(\)/);
-  const productionStartup = electronMain.indexOf("} else void (async () => {");
-  const refreshBarrier = electronMain.indexOf("await startupAuthenticationRefresh", productionStartup);
-  const upgrade = electronMain.indexOf("runtimeHost.upgradeManagedRuntime()", productionStartup);
-  const runtimeStart = electronMain.indexOf("runtimeSupervisor.startIfConfigured()", upgrade);
-  const routeConnect = electronMain.indexOf("runtimeHost.connectBridgeRoute()", runtimeStart);
-  assert.ok(refreshBarrier > productionStartup, "production startup must wait for saved-session refresh");
-  assert.ok(upgrade > refreshBarrier, "runtime upgrade must not inspect the browser before refresh settles");
-  assert.ok(runtimeStart > upgrade, "configured runtime must start after any upgrade");
-  assert.ok(routeConnect > runtimeStart, "Codex route must connect only after the runtime is healthy");
+  assert.match(electronMain, /routingSwitch.ready = \(\) => startupAuthenticationRefresh/);
+  assert.match(electronMain, /routingSwitch.startup\(\)/);
+  const routingSource = fs.readFileSync(path.join(launcherRoot, "electron", "routing-switch.cjs"), "utf8");
+  const refreshBarrier = routingSource.indexOf("await this.ready()");
+  const upgrade = routingSource.indexOf("await this.host.upgradeManagedRuntime()", refreshBarrier);
+  const runtimeStart = routingSource.indexOf("await this.supervisor.startIfConfigured()", upgrade);
+  const routeConnect = routingSource.indexOf("await this.host.connectBridgeRoute()", runtimeStart);
+  assert.ok(refreshBarrier >= 0);
+  assert.ok(upgrade > refreshBarrier);
+  assert.ok(runtimeStart > upgrade);
+  assert.ok(routeConnect > runtimeStart);
   assert.match(appSource, /browser\?\.status === "loading" \? copy\.checkingSignIn/);
 });
 

@@ -7,6 +7,8 @@ function subscription(channel, listener) {
 }
 
 contextBridge.exposeInMainWorld("codexWebLauncher", {
+  routingStatus: () => ipcRenderer.invoke("launcher:routing-status"),
+  setRouting: enabled => ipcRenderer.invoke("launcher:routing-set", enabled),
   snapshot: () => ipcRenderer.invoke("launcher:snapshot"),
   setLanguage: (language) => ipcRenderer.invoke("launcher:set-language", language),
   openSocial: (target) => ipcRenderer.invoke("launcher:open-social", target),

@@ -223,3 +223,7 @@ DEV tunnel 就绪，具名聊天按需连接 broker。正式凭据和 `Codex Nat
 本项目是独立软件，与 OpenAI 无关联，也未获得 OpenAI 背书。请仅使用自己的账户，并遵守适用的
 [使用条款](https://openai.com/policies/terms-of-use/)和工作区政策；本项目不会绕过身份验证或
 访问控制。
+
+## 总控整合版
+
+此 fork 将总控开关接入原生启动器，关闭时恢复开启前的 Codex 配置。参见[整合说明](docs/integrated-routing.md)。

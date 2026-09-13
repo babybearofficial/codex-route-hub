@@ -38,10 +38,11 @@ function writeJson(response, status, body) {
 }
 
 class BrowserControlServer {
-  constructor({ logger, getBrowserHost, getPreferences }) {
+  constructor({ logger, getBrowserHost, getPreferences, getRouting = () => null }) {
     this.logger = logger;
     this.getBrowserHost = getBrowserHost;
     this.getPreferences = getPreferences;
+    this.getRouting = getRouting;
     this.token = randomBytes(32).toString("base64url");
     this.port = 0;
     this.server = createServer((request, response) => {
@@ -91,6 +92,23 @@ class BrowserControlServer {
   async handle(request, response) {
     if (!secureTokenMatches(this.token, request.headers.authorization)) {
       writeJson(response, 401, { error: "unauthorized" });
+      return;
+    }
+    if (request.method === "POST" && request.url?.startsWith("/v1/routing/")) {
+      const routing = this.getRouting();
+      if (!routing) { writeJson(response, 404, { error: "routing_unavailable" }); return; }
+      try {
+        if (request.url === "/v1/routing/status") {
+          writeJson(response, 200, routing.status());
+        } else if (request.url === "/v1/routing/set") {
+          const body = await readJson(request, 1024);
+          if (typeof body?.enabled !== "boolean") throw new Error("Routing enabled must be boolean");
+          writeJson(response, 200, await routing.setEnabled(body.enabled));
+        } else writeJson(response, 404, { error: "not_found" });
+      } catch (error) {
+        const { redactText } = require("./logging.cjs");
+        writeJson(response, 409, { error: redactText(error.message) });
+      }
       return;
     }
     const isTurn = request.url === "/v1/turn/start"

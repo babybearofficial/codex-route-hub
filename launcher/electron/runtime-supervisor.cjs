@@ -779,30 +779,17 @@ class RuntimeSupervisor {
   async discoverTunnelHealthBaseUrl(config) {
     const tunnel = config.tunnel;
     if (!tunnel) throw new Error("launcher-owned tunnel has no runtime configuration");
-    const result = await this.runTunnelCommand(
-      config,
-      ["runtimes", "status", tunnel.alias, "--json"],
-      5_000,
-      "Local tunnel health discovery",
-    );
-    if (result.code !== 0) {
-      throw new Error(`Local tunnel health discovery failed: ${tunnelControlDiagnostic(result)}`);
-    }
-    let parsed;
-    try {
-      parsed = JSON.parse(result.output);
-    } catch (error) {
-      throw new Error(`Local tunnel health discovery returned invalid JSON: ${errorMessage(error)}`);
-    }
-    const candidates = [
-      parsed?.local?.effective_health?.base_url,
-      parsed?.local?.health?.base_url,
-      parsed?.health_url,
-      parsed?.ui_url,
-    ];
-    const baseUrl = candidates.map(loopbackHealthBaseURL).find(Boolean);
-    if (!baseUrl) {
-      throw new Error("Local tunnel health discovery returned no verified loopback endpoint");
+    this.tunnelHealthBaseUrl = null;
+    // The status command may query the control plane. Its latency must not be
+    // confused with failure of a healthy local tunnel (observed >5 seconds).
+    const result = await this.runTunnelCommand(config,
+      ["runtimes", "cleanup", "--json"], 5_000, "Local tunnel health discovery");
+    if (result.code !== 0) throw new Error(`Local tunnel inventory failed: ${tunnelControlDiagnostic(result)}`);
+    const inventory = JSON.parse(result.output);
+    const entry = inventory.entries?.find(item => item?.alias === tunnel.alias);
+    const baseUrl = loopbackHealthBaseURL(entry?.live_runtime?.base_url);
+    if (!baseUrl || entry?.live_runtime?.found !== true) {
+      throw new Error("Local tunnel inventory returned no verified loopback endpoint");
     }
     this.tunnelHealthBaseUrl = baseUrl;
     return baseUrl;

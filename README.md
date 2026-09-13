@@ -244,3 +244,7 @@ your own account and in accordance with applicable [Terms of Use](https://openai
 and workspace policies; it does not bypass authentication or access controls.
 
 Having trouble? See [Troubleshooting](TROUBLESHOOTING.md) for common problems and their solutions.
+
+## Integrated routing fork
+
+This fork adds a unified routing switch and preserves the pre-activation Codex configuration. See [integrated routing](docs/integrated-routing.md).

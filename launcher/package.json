@@ -72,16 +72,23 @@
       "signIgnore": [
         "[/\\\\]Contents[/\\\\]Resources[/\\\\]runtime[/\\\\]runtime[/\\\\]bun$"
       ],
-      "target": ["dmg", "zip"]
+      "target": [
+        "dmg",
+        "zip"
+      ]
     },
     "win": {
       "icon": "assets/icon.ico",
-      "target": ["nsis"]
+      "target": [
+        "nsis"
+      ]
     },
     "linux": {
       "category": "Development",
       "icon": "assets/icon.png",
-      "target": ["AppImage"]
+      "target": [
+        "AppImage"
+      ]
     },
     "nsis": {
       "guid": "d1a6026a-6210-588e-9a2b-da3936f94e02",
@@ -92,5 +99,6 @@
       "createStartMenuShortcut": true,
       "runAfterFinish": true
     }
-  }
+  },
+  "integratedRouting": true
 }

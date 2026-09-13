@@ -24,6 +24,7 @@ const {
   installProcessDiagnosticGuards,
   registerLoggedIpc,
 } = require("./logging.cjs");
+const { RoutingSwitch } = require("./routing-switch.cjs");
 const { RuntimeHost } = require("./runtime.cjs");
 const { ensurePackagedRuntime, waitForPackagedRuntimeSource } = require("./runtime-install.cjs");
 const { RuntimeSupervisor } = require("./runtime-supervisor.cjs");
@@ -81,6 +82,7 @@ let browserHost = null;
 let runtimeHost = null;
 let browserControl = null;
 let runtimeSupervisor = null;
+let routingSwitch = null;
 let tray = null;
 let quitting = false;
 let shutdownInProgress = false;
@@ -421,7 +423,22 @@ function smokePassedForCurrentVersion(state) {
 }
 
 function registerIpc({ logger, stateStore }) {
-  const handle = (channel, handler) => registerLoggedIpc(ipcMain, logger, channel, handler);
+  const lifecycleChannels = new Set([
+    "launcher:setup-core", "launcher:setup-mcp", "launcher:uninstall-integration",
+    "launcher:bigger-context", "launcher:zero-risk-pro", "launcher:browser-interaction-mode",
+    "launcher:doctor", "launcher:mcp-verify", "launcher:browser-smoke", "launcher:browser-logout",
+  ]);
+  const handle = (channel, handler) => registerLoggedIpc(ipcMain, logger, channel, (...args) => {
+    if (routingSwitch?.inFlight && lifecycleChannels.has(channel)) {
+      throw new Error("Wait for the routing operation to finish");
+    }
+    return handler(...args);
+  });
+  handle("launcher:routing-status", () => routingSwitch?.status());
+  handle("launcher:routing-set", (_event, enabled) => {
+    if (!routingSwitch) throw new Error("Routing switch is unavailable in DEV mode");
+    return routingSwitch.setEnabled(enabled);
+  });
   handle("launcher:snapshot", async () => ({
     profile: LAUNCHER_PROFILE.kind,
     profilePaths: {
@@ -871,10 +888,12 @@ async function requestQuit() {
   }
   shutdownInProgress = true;
   try {
-    const activeOperation = runtimeHost?.currentOperation() || browserHost?.currentOperation();
+    const activeOperation = runtimeHost?.currentOperation() || browserHost?.currentOperation()
+      || (routingSwitch?.inFlight ? "routing" : null);
     if (activeOperation) {
       throw new Error(`Wait for ${activeOperation} to finish before quitting Codex Web GPT`);
     }
+    if (routingSwitch) await routingSwitch.setEnabled(false);
     await runtimeSupervisor?.shutdown({ cancelActiveTurns: true, force: true });
     stopCatalogVerificationMonitor();
     quitting = true;
@@ -972,6 +991,7 @@ async function start() {
     logger,
     getBrowserHost: () => browserHost,
     getPreferences: () => stateStore.read(),
+    getRouting: () => routingSwitch,
   }).start();
   runtimeSupervisor = new RuntimeSupervisor({
     app,
@@ -998,6 +1018,15 @@ async function start() {
     supervisor: runtimeSupervisor,
     getBrowserInteractionMode: () => stateStore.read().browserInteractionMode,
   });
+  if (!IS_DEV_PROFILE) routingSwitch = new RoutingSwitch({
+    host: runtimeHost, supervisor: runtimeSupervisor, store: stateStore,
+    publishState: state => send("launcher:state-changed", state), publishOperation,
+  });
+  if (routingSwitch) {
+    fs.mkdirSync(path.join(CORE_HOME, "runtime"), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(CORE_HOME, "runtime", "routing-control.json"),
+      JSON.stringify({ protocol: "codex-routing-v1" }), { mode: 0o600 });
+  }
   const configuredInteractionMode = runtimeHost.runtimeConfigSnapshot().config?.browserInteractionMode;
   if ((configuredInteractionMode === "automatic" || configuredInteractionMode === "manual")
     && stateStore.read().browserInteractionMode !== configuredInteractionMode) {
@@ -1025,7 +1054,7 @@ async function start() {
     currentVersion: app.getVersion(),
     platform: process.platform,
     arch: process.arch,
-    packaged: app.isPackaged && !IS_DEV_PROFILE,
+    packaged: app.isPackaged && !IS_DEV_PROFILE && !require("../package.json").integratedRouting,
     executablePath: process.execPath,
     runtimeExecutable: updaterRuntimeRoot
       ? runtimeBundlePaths(updaterRuntimeRoot, process.platform).executable
@@ -1120,128 +1149,15 @@ async function start() {
         send("launcher:state-changed", failed);
       });
     }
-  } else void (async () => {
-    await startupAuthenticationRefresh;
-    const upgrade = await runtimeHost.upgradeManagedRuntime();
-    if (upgrade.updated) {
-      const state = stateStore.update({
-        coreSetupComplete: true,
-        codexCatalogVerified: false,
-        codexRestartRequired: true,
-        experimentalBiggerContext: runtimeHost.runtimeConfigSnapshot().config?.experimentalBiggerContext === true,
-        zeroRiskProEnabled: runtimeHost.runtimeConfigSnapshot().config?.zeroRiskProEnabled === true,
-        ...(upgrade.mode === "full" ? {
-          mcpRuntimeInstalled: true,
-          mcpSetupComplete: false,
-          mcpGuideStep: 2,
-        } : {
-          mcpRuntimeInstalled: false,
-          mcpSetupComplete: false,
-          mcpGuideStep: 0,
-        }),
-      });
-      send("launcher:state-changed", state);
-      logger.info("runtime.release_upgraded", {
-        fromVersion: upgrade.fromVersion,
-        toVersion: upgrade.toVersion,
-        mode: upgrade.mode,
-        connectorMigrated: upgrade.connectorMigrated,
-      });
-    }
-    const configuredRuntime = runtimeHost.runtimeConfigSnapshot();
-    if (configuredRuntime.configured) {
-      const enabled = configuredRuntime.config?.experimentalBiggerContext === true;
-      const zeroRiskProEnabled = configuredRuntime.config?.zeroRiskProEnabled === true;
-      const saved = stateStore.read();
-      if (saved.experimentalBiggerContext !== enabled
-        || saved.zeroRiskProEnabled !== zeroRiskProEnabled) {
-        const state = stateStore.update({ experimentalBiggerContext: enabled, zeroRiskProEnabled });
-        send("launcher:state-changed", state);
-      }
-    }
-    const runtime = await runtimeSupervisor.startIfConfigured();
-    if (runtime.status !== "ready") return runtime;
-    const route = await runtimeHost.connectBridgeRoute();
-    return { ...runtime, bridgeRouteChanged: route.changed === true };
-  })().then(async (runtime) => {
-    if (runtime.status === "ready") {
-      const config = runtimeSupervisor.readConfig();
-      const current = stateStore.read();
-      const patch = {
-        coreSetupComplete: true,
-        mcpRuntimeInstalled: config.mode === "full",
-        experimentalBiggerContext: config.experimentalBiggerContext === true,
-        zeroRiskProEnabled: config.zeroRiskProEnabled === true,
-        ...(runtime.bridgeRouteChanged ? {
-          codexCatalogVerified: false,
-          codexRestartRequired: true,
-        } : {}),
-        ...(config.mode === "browser-only" ? {
-          mcpSetupComplete: false,
-          mcpGuideStep: 0,
-        } : {}),
-      };
-      if (Object.entries(patch).some(([key, value]) => current[key] !== value)) {
-        const state = stateStore.update(patch);
-        send("launcher:state-changed", state);
-      }
-      startCatalogVerificationMonitor({ logger, stateStore });
-      return;
-    }
-    if (runtime.status === "not-configured") {
-      const routeRecovery = await restoreCodexRouteAfterRuntimeFailure({ logger, stateStore });
-      const current = stateStore.read();
-      if (current.coreSetupComplete || current.mcpRuntimeInstalled || current.mcpSetupComplete) {
-        const state = stateStore.update({
-          coreSetupComplete: false,
-          codexCatalogVerified: false,
-          mcpRuntimeInstalled: false,
-          mcpSetupComplete: false,
-          mcpGuideStep: 0,
-        });
-        send("launcher:state-changed", state);
-      }
-      if (routeRecovery.error) {
-        publishOperation({
-          name: "runtime-start",
-          status: "failed",
-          message: `Local runtime is not configured; restoring the previous Codex route also failed: ${routeRecovery.error}`,
-        });
-      }
-      return;
-    }
-    const routeRecovery = await restoreCodexRouteAfterRuntimeFailure({ logger, stateStore });
-    const state = stateStore.update({ coreSetupComplete: false, codexCatalogVerified: false });
-    send("launcher:state-changed", state);
-    if (runtime.status === "external" || runtime.status === "needs-setup") {
-      const detail = runtime.detail || (
-        runtime.status === "external"
-          ? "Another process owns the configured Codex Web GPT runtime"
-          : "The installed runtime configuration must be repaired from Setup"
-      );
-      publishOperation({
-        name: "runtime-start",
-        status: "failed",
-        message: routeRecovery.error
-          ? `${detail}; restoring the previous Codex route also failed: ${routeRecovery.error}`
-          : routeRecovery.restored
-            ? `${detail}; the previous Codex route was restored, restart Codex once`
-            : detail,
-      });
-    }
-  }).catch(async (error) => {
-    const primary = error instanceof Error ? error.message : String(error);
-    const routeRecovery = await restoreCodexRouteAfterRuntimeFailure({ logger, stateStore });
-    const message = routeRecovery.error
-      ? `${primary}; restoring the previous Codex route also failed: ${routeRecovery.error}`
-      : routeRecovery.restored
-        ? `${primary}; the previous Codex route was restored, restart Codex once`
-        : primary;
-    logger.error("runtime.startup_failed", { message });
-    const state = stateStore.update({ coreSetupComplete: false, codexCatalogVerified: false });
-    send("launcher:state-changed", state);
-    publishOperation({ name: "runtime-start", status: "failed", message });
-  });
+  } else {
+    routingSwitch.ready = () => startupAuthenticationRefresh;
+    void routingSwitch.startup().then(result => {
+      if (result.last?.ok && result.runtimeReady) startCatalogVerificationMonitor({ logger, stateStore });
+    }).catch(error => {
+      logger.error("runtime.startup_failed", { message: error.message });
+    });
+  }
+
 
   app.on("activate", () => showMainWindow());
   app.on("before-quit", (event) => {

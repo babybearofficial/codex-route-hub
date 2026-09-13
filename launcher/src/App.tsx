@@ -1670,6 +1670,23 @@ function SettingsSurface({
     <ContentSurface narrow title={devProfile ? copy.devSettingsTitle : copy.settingsTitle}>
       <SectionHeading label={copy.general} />
       <div className="settings-list">
+        {!devProfile ? <SettingRow
+          label={snapshot.state.language === "zh-CN" ? "Codex Web GPT 总控开关" : "Codex Web GPT routing"}
+          body={snapshot.state.language === "zh-CN"
+            ? "开启时验证代理和 Tunnel；关闭时恢复开启前配置，保留 Codex App 和当前会话。"
+            : "Verify the proxy and tunnel on enable. Restore the previous configuration on disable; keep Codex App open."}
+        >
+          <Switch checked={!snapshot.state.routingDisabled} disabled={busy}
+            onChange={enabled => {
+              setBusy(true);
+              void api!.setRouting(enabled)
+                .then(() => api!.snapshot())
+                .then(next => updateState(next.state))
+                .catch(cause => setError(messageOf(cause)))
+                .finally(() => setBusy(false));
+            }} />
+        </SettingRow> : null}
+
         {!devProfile ? <SettingRow body={copy.launchAtLoginBody} flushAfter label={copy.launchAtLogin}>
           <Switch
             checked={snapshot.state.autoStart}
