@@ -9,8 +9,8 @@ from pathlib import Path
 
 DEFAULT_HOME = Path(os.environ.get("CODEX_CHATGPT_WEB_HOME", Path.home() / ".codex-chatgpt-web"))
 DEFAULT_CODEX_TOML = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "config.toml"
-DEFAULT_APP_NAME = "Codex Web GPT"
-DEFAULT_BUNDLE_ID = "dev.codexwebgpt.launcher"
+DEFAULT_APP_NAME = "Codex Route Hub"
+DEFAULT_BUNDLE_ID = "dev.babybear.codexroutehub"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 17841
 
@@ -93,7 +93,7 @@ def read_bridge_port(path: Path) -> int:
 
 def locate_launcher_cli(home: Path) -> tuple[Path, Path]:
     """Match the installed launcher, not a newer downloaded/staged version."""
-    info = Path("/Applications/Codex Web GPT.app/Contents/Info.plist")
+    info = Path("/Applications/Codex Route Hub.app/Contents/Info.plist")
     if info.exists():
         with info.open("rb") as stream:
             version = plistlib.load(stream)["CFBundleShortVersionString"]

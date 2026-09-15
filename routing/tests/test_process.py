@@ -22,7 +22,7 @@ COMPUTER_USE = (
     "Contents/MacOS/SkyComputerUseService"
 )
 WEB_GPT_APP = (
-    "62001 /Applications/Codex Web GPT.app/Contents/MacOS/Codex Web GPT"
+    "62001 /Applications/Codex Route Hub.app/Contents/MacOS/Codex Route Hub"
 )
 WEB_GPT_SERVE = (
     "62002 /Users/wickedmc/.codex-chatgpt-web/versions/5.0.0-darwin-arm64/runtime/bun "

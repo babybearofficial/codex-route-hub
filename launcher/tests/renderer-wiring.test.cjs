@@ -161,7 +161,7 @@ test("Zero Risk setup commits state after the runtime transaction and preserves 
     electronMain.indexOf('handle("launcher:set-mcp-step"'),
   );
   const runtimeMcpCommit = mcpSetupHandler.indexOf("const runSetup = afterRuntimeReady => setup({");
-  const mcpTransaction = mcpSetupHandler.indexOf("await browserHost.withInteractionModeChange(interactionMode, runSetup)");
+  const mcpTransaction = mcpSetupHandler.indexOf("browserHost.withInteractionModeChange(interactionMode, runSetup)");
   const stateMcpCommit = mcpSetupHandler.indexOf("const state = stateStore.update({");
   assert.ok(runtimeMcpCommit >= 0 && runtimeMcpCommit < mcpTransaction);
   assert.ok(mcpTransaction < stateMcpCommit);

@@ -1,4 +1,4 @@
-# Integrated routing fork
+# Codex Route Hub — integrated routing fork
 
 This fork combines `codex_routing` with Codex Web GPT 5.0.6. The native launcher owns activation, restoration and runtime cleanup. It does not restart Codex App.
 
@@ -31,3 +31,11 @@ New installations default to routing off. Opening the application does not insta
 Tunnel-client 0.0.12 may report a ready runtime with `live_runtime.found=false`. Health URL discovery first uses local inventory and falls back to alias status with a bounded 20-second deadline, then verifies the loopback health and MCP endpoints. The previous five-second deadline was shorter than observed control-plane lookup latency.
 
 MCP connection and runtime verification depend on an installed, enabled route, not on a restarted Codex model picker. The model catalog refresh indicator remains separate so current Codex work can finish before any restart.
+
+## Managed Codex startup
+
+The fork application is named **Codex Route Hub**, bundle ID `dev.babybear.codexroutehub`. The repository and runtime protocol names remain compatible with upstream. Existing private data directories retain their historical names to preserve login and restoration history. Do not run the upstream launcher and this fork against the same data directory concurrently.
+
+The user-confirmed Codex client is `/Applications/ChatGPT.app` with bundle ID `com.openai.codex`. Activation first refreshes and verifies the ChatGPT login, gracefully quits that exact client, prepares and verifies the route, then opens the client in the background and waits for process readback. Refusal or quit timeout does not trigger a forced kill. On setup failure, restoration precedes reopening the previous client. A transient `ERR_CONNECTION_CLOSED`, `ERR_CONNECTION_RESET` or `ERR_NETWORK_CHANGED` gets one socket reset and fresh navigation retry; cookies and login storage are preserved. Persistent network errors remain errors and do not justify restarting the client before preflight succeeds.
+
+Isolated acceptance may set `CODEX_ROUTE_HUB_TEST_NO_CLIENT_RESTART=1` only with a separate CODEX_HOME; the override is ignored for the actual user Codex home. Production activation always uses the managed restart pipeline on macOS.

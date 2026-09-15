@@ -1150,10 +1150,21 @@ class BrowserHost {
   async refreshChatGptHomeDocument() {
     // A navigation from the idle host already creates a fresh ChatGPT document. Reload only an
     // existing Temporary Chat document so the helper observes one authoritative SPA bootstrap.
-    if (isTemporaryChatUrl(this.view.webContents.getURL())) {
-      await this.hardRefreshHome();
-    } else {
-      await this.view.webContents.loadURL(TEMPORARY_CHAT_URL);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        if (attempt === 0 && isTemporaryChatUrl(this.view.webContents.getURL())) {
+          await this.hardRefreshHome();
+        } else {
+          await this.view.webContents.loadURL(TEMPORARY_CHAT_URL);
+        }
+        break;
+      } catch (error) {
+        if (attempt !== 0 || !/ERR_CONNECTION_(CLOSED|RESET)|ERR_NETWORK_CHANGED/.test(String(error))) throw error;
+        this.logger.warn("browser.transient_connection_retry", { attempt: 1 });
+        // Reset stale pooled sockets, not cookies, authentication or browser storage.
+        await this.view.webContents.session.closeAllConnections();
+        if (this.view.webContents.isDestroyed()) throw error;
+      }
     }
     await this.waitForAuthenticated(60_000);
   }

@@ -14,9 +14,9 @@ PROTECTED_MARKERS = (
 )
 
 WEB_GPT_MARKERS = (
-    "/Applications/Codex Web GPT.app",
+    "/Applications/Codex Route Hub.app",
     "/.codex-chatgpt-web/",
-    "dev.codexwebgpt.launcher",
+    "dev.babybear.codexroutehub",
 )
 
 
@@ -34,7 +34,7 @@ def _executable(command: str) -> str:
 def is_webgpt_app_command(command: str) -> bool:
     if is_protected_command(command):
         return False
-    return command.lstrip().startswith("/Applications/Codex Web GPT.app")
+    return command.lstrip().startswith("/Applications/Codex Route Hub.app")
 
 
 def is_webgpt_command(command: str) -> bool:

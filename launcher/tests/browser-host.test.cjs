@@ -3128,3 +3128,18 @@ test("manual turns have no live-session TTL but are revoked when their owner pro
     status: "failed",
   });
 });
+
+test('transient hard-refresh connection closure retries once without clearing login storage', async () => {
+  const calls = [];
+  const fixture = {
+    view: { webContents: { getURL: () => 'https://chatgpt.com/?temporary-chat=true',
+      session: { closeAllConnections: async () => calls.push('reset-sockets') },
+      isDestroyed: () => false, loadURL: async () => calls.push('navigate') } },
+    hardRefreshHome: async () => { calls.push('refresh'); throw new Error('ERR_CONNECTION_CLOSED'); },
+    waitForAuthenticated: async () => calls.push('verify'), logger: { warn() {} },
+  };
+  await BrowserHost.prototype.refreshChatGptHomeDocument.call(fixture);
+  assert.deepEqual(calls, ['refresh', 'reset-sockets', 'navigate', 'verify']);
+  fixture.view.webContents.loadURL = async () => { throw new Error('ERR_CONNECTION_RESET'); };
+  await assert.rejects(BrowserHost.prototype.refreshChatGptHomeDocument.call(fixture), /ERR_CONNECTION_RESET/);
+});

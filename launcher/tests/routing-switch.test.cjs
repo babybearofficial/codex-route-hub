@@ -100,3 +100,33 @@ test('restore failure retains recovery journal and never reports off success', a
     assert.equal(w.control.inFlight, null);
   } finally { w.cleanup(); }
 });
+
+test('pipeline verifies authentication, quits client, establishes route then reopens client', async () => {
+  const w = world();
+  w.control.preflight = async () => w.calls.push('auth');
+  w.control.client = { stop: async () => w.calls.push('quit-client'), reopen: async () => w.calls.push('open-client') };
+  try {
+    await w.control.setEnabled(true);
+    assert.ok(w.calls.indexOf('auth') < w.calls.indexOf('quit-client'));
+    assert.ok(w.calls.indexOf('quit-client') < w.calls.indexOf('start'));
+    assert.ok(w.calls.indexOf('connect') < w.calls.indexOf('open-client'));
+  } finally { w.cleanup(); }
+});
+
+test('pipeline failure restores original route before reopening the previous client', async () => {
+  const w = world();
+  w.control.client = { stop: async () => w.calls.push('quit-client'), reopen: async () => w.calls.push('open-client') };
+  w.host.doctor = async () => { throw new Error('unhealthy'); };
+  try {
+    await assert.rejects(w.control.setEnabled(true), /unhealthy/);
+    assert.deepEqual(w.calls.slice(-3), ['stop', 'restore', 'open-client']);
+  } finally { w.cleanup(); }
+});
+
+test('authentication failure does not quit the client', async () => {
+  const w = world(); let quit = false;
+  w.control.preflight = async () => { throw new Error('ERR_CONNECTION_CLOSED'); };
+  w.control.client = { stop: async () => { quit = true; }, reopen: async () => {} };
+  try { await assert.rejects(w.control.setEnabled(true)); assert.equal(quit, false); }
+  finally { w.cleanup(); }
+});

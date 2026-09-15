@@ -1,5 +1,18 @@
 # Routing integration validation — 2026-09-15
 
+## Codex Route Hub follow-up acceptance
+
+- Fork application renamed to **Codex Route Hub**, bundle ID `dev.babybear.codexroutehub`, installed at `/Applications/Codex Route Hub.app`. The former installed application is retained in a private migration backup. Existing private profile paths are preserved to retain login and settings.
+- Activation now verifies the browser session, gracefully stops the exact `/Applications/ChatGPT.app` client with bundle identity `com.openai.codex`, prepares and verifies routing, and reopens the client in the background. Failure restores routing before attempting to reopen a previously running client. Quit and launch waits are bounded; no helper force-kill is used.
+- `ERR_CONNECTION_CLOSED`, reset and network-change errors receive one socket-reset/navigation retry. Persistent failures remain visible and prevent client shutdown during browser preflight.
+- Latest launcher suite: **309 passed, 1 skipped** (310 total); Python compatibility: **58 passed**. Renderer TypeScript/build and macOS arm64 packaging passed; installed deep/strict signature verification passed.
+- Two real packaged activations in isolated profiles passed browser authentication, proxy ownership and Tunnel readiness. The second stop restored the immediate pre-activation configuration byte-for-byte. Current live Codex configuration remained unchanged.
+- Client lifecycle ordering, refusal, timeout and rollback were tested with an injected runner. Read-only native discovery verified the selected running client. **Actual current-client termination/relaunch was NOT_RUN during repair** to preserve the active work session; the installed application's next activation performs that step. Only the isolated test CODEX_HOME used the explicit test restart bypass.
+- Installed normal-profile readback: routing disabled, not busy, runtime stopped, no listener on 17841; the new restart button is present. Old/test login entries were disabled and the installed new app's login entry was enabled, preserving the original preference. The current ChatGPT client PID remained unchanged.
+- Copied isolated credentials/profile data were removed after shutdown. Sanitized receipts and screenshots remain in ignored artifacts. Resource checks below cover the previous shared routing implementation; the added retry and client waits are bounded, not an assertion of zero leaks in all Electron workloads.
+
+The following sections record the earlier integration baseline, before the application rename and client-restart follow-up.
+
 ## Source and build
 
 - Fork: `babybearofficial/codex-chatgpt-web`, branch `codex/integrated-routing`, upstream base `e85e369` (5.0.6).

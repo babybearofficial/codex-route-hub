@@ -31,7 +31,7 @@ function resolveLauncherProfile({
       : path.join(appData, "Codex Web GPT");
     return {
       kind: PRODUCTION_PROFILE,
-      displayName: "Codex Web GPT",
+      displayName: "Codex Route Hub",
       coreHome,
       codexHome: env.CODEX_HOME?.trim()
         ? resolveUserPath(env.CODEX_HOME.trim(), homeDir)
@@ -52,7 +52,7 @@ function resolveLauncherProfile({
   }
   return {
     kind: DEVELOPMENT_PROFILE,
-    displayName: "Codex Web GPT DEV",
+    displayName: "Codex Route Hub DEV",
     coreHome,
     codexHome: path.join(coreHome, "codex-home"),
     userData: path.join(coreHome, "launcher"),

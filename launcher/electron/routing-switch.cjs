@@ -7,8 +7,8 @@ const { redactText } = require('./logging.cjs');
 const digest = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
 class RoutingSwitch {
-  constructor({ host, supervisor, store, publishState, publishOperation, ready = async () => {} }) {
-    Object.assign(this, { host, supervisor, store, publishState, publishOperation, ready });
+  constructor({ host, supervisor, store, publishState, publishOperation, ready = async () => {}, preflight = async () => {}, client = null }) {
+    Object.assign(this, { host, supervisor, store, publishState, publishOperation, ready, preflight, client });
     this.inFlight = null;
     this.last = null;
   }
@@ -91,17 +91,31 @@ class RoutingSwitch {
     }
   }
 
-  async enable({ startup = false } = {}) {
+  async install(prepare) {
+    let result;
+    await this.setEnabled(true, { prepare: async () => { result = await prepare(); } });
+    return result;
+  }
+
+  async enable({ startup = false, prepare } = {}) {
+    let clientStageReached = false;
     this.update({ routingDisabled: false });
     this.publishOperation?.({ name: 'routing', status: 'running', message: 'Starting and verifying Web GPT routing' });
     try {
       await this.ready();
       const configured = this.host.runtimeConfigSnapshot();
-      if (!configured.configured) {
+      if (!configured.configured && !prepare) {
         if (!startup) throw new Error('Complete sign-in and model setup in Settings first');
         this.last = { ok: false, status: 'not-configured' };
         return this.status();
       }
+      await this.preflight();
+      if (this.client) {
+        this.publishOperation?.({ name: 'routing', status: 'running', message: '正在正常退出 ChatGPT.app（Codex 客户端）…' });
+        clientStageReached = true;
+        await this.client.stop();
+      }
+      if (prepare) await prepare();
       this.restoreCheckpoint();
       const upgrade = await this.host.upgradeManagedRuntime();
       const route = await this.host.bridgeStatus();
@@ -118,12 +132,20 @@ class RoutingSwitch {
         ...(connected.changed || upgrade?.updated ? { codexRestartRequired: true, codexCatalogVerified: false } : {}),
         ...(config?.mode === 'browser-only' ? { mcpSetupComplete: false, mcpGuideStep: 0 } : {}),
         ...(config?.mode === 'full' && upgrade?.updated ? { mcpSetupComplete: false, mcpGuideStep: 2 } : {}) });
-      this.last = { ok: true, status: 'ready', checks: report.checks.map(({ id, status, message }) => ({ id, status, message })) };
+      if (this.client) {
+        this.publishOperation?.({ name: 'routing', status: 'running', message: '路由验证通过，正在后台重新打开 Codex…' });
+        await this.client.reopen();
+      }
+      this.last = { ok: true, status: 'ready', clientRestarted: Boolean(this.client), checks: report.checks.map(({ id, status, message }) => ({ id, status, message })) };
       this.publishOperation?.({ name: 'routing', status: 'completed', message: 'Web GPT routing is ready' });
       return this.status();
     } catch (error) {
       let cleanup;
       try { await this.disable(); } catch (cause) { cleanup = cause.message; }
+      if (clientStageReached && !cleanup) {
+        try { await this.client.reopen({ recovery: true }); }
+        catch (cause) { cleanup = `Codex reopen failed: ${cause.message}`; }
+      }
       const message = error.message + (cleanup ? `; restore failed: ${cleanup}` : '');
       this.last = { ok: false, status: 'failed', message };
       this.publishOperation?.({ name: 'routing', status: 'failed', message });

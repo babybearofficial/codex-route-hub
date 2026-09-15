@@ -21,7 +21,7 @@ class AppLifecycleArgvTest(unittest.TestCase):
             ["osascript", "-e", f'tell application id "{DEFAULT_BUNDLE_ID}" to quit'],
         )
         joined = " ".join(argv)
-        self.assertIn("dev.codexwebgpt.launcher", joined)
+        self.assertIn("dev.babybear.codexroutehub", joined)
         self.assertNotIn("ChatGPT", joined)
         self.assertNotIn("com.openai.codex", joined)
         self.assertNotIn('tell application "Codex"', joined)

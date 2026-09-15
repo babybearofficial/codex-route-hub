@@ -24,6 +24,7 @@ const {
   installProcessDiagnosticGuards,
   registerLoggedIpc,
 } = require("./logging.cjs");
+const { CodexClientLifecycle } = require("./codex-client-lifecycle.cjs");
 const { RoutingSwitch } = require("./routing-switch.cjs");
 const { RuntimeHost } = require("./runtime.cjs");
 const { ensurePackagedRuntime, waitForPackagedRuntimeSource } = require("./runtime-install.cjs");
@@ -51,7 +52,7 @@ const BROWSER_DESCRIPTOR_PATH = path.join(CORE_HOME, "runtime", "launcher-browse
 const BROWSER_HELPER_PATH = app.isPackaged
   ? path.join(process.resourcesPath, "runtime", "app", "browser-helper.cjs")
   : path.join(SOURCE_ROOT, ".launcher-runtime", "browser-helper.cjs");
-const GITHUB_URL = "https://github.com/miuuyy/codex-chatgpt-web";
+const GITHUB_URL = "https://github.com/babybearofficial/codex-chatgpt-web";
 const X_URL = "https://x.com/miu21590";
 const CONNECTORS_URL = "https://chatgpt.com/#settings/Plugins";
 const TUNNELS_URL = "https://platform.openai.com/settings/organization/tunnels";
@@ -64,7 +65,7 @@ process.env.CODEX_CHATGPT_WEB_HOME = CORE_HOME;
 process.env.CODEX_HOME = LAUNCHER_PROFILE.codexHome;
 app.setName(LAUNCHER_PROFILE.displayName);
 if (process.platform === "win32") {
-  app.setAppUserModelId(IS_DEV_PROFILE ? "dev.codexwebgpt.launcher.dev" : "dev.codexwebgpt.launcher");
+  app.setAppUserModelId(IS_DEV_PROFILE ? "dev.babybear.codexroutehub.dev" : "dev.babybear.codexroutehub");
 }
 const launcherUserData = LAUNCHER_PROFILE.userData;
 fs.mkdirSync(launcherUserData, { recursive: true, mode: 0o700 });
@@ -194,32 +195,32 @@ function trayImage() {
 
 const NATIVE_COPY = Object.freeze({
   en: Object.freeze({
-    openLauncher: "Open Codex Web GPT",
+    openLauncher: "Open Codex Route Hub",
     quit: "Quit",
     exportDiagnostics: "Export privacy-safe diagnostics",
     cancel: "Cancel",
     remove: "Remove",
-    removeTitle: "Remove Codex Web GPT",
+    removeTitle: "Remove Codex Route Hub",
     removeMessage: "Remove the ChatGPT Web models from Codex and restore the previous model route?",
     removeDetail: "The launcher's ChatGPT login profile will be preserved. Codex must be restarted once.",
   }),
   "zh-CN": Object.freeze({
-    openLauncher: "打开 Codex Web GPT",
+    openLauncher: "打开 Codex Route Hub",
     quit: "退出",
     exportDiagnostics: "导出隐私安全诊断",
     cancel: "取消",
     remove: "移除",
-    removeTitle: "移除 Codex Web GPT",
+    removeTitle: "移除 Codex Route Hub",
     removeMessage: "从 Codex 中移除 ChatGPT Web 模型并恢复此前的模型路由？",
     removeDetail: "启动器中的 ChatGPT 登录 profile 会保留。Codex 需要重启一次。",
   }),
   ja: Object.freeze({
-    openLauncher: "Codex Web GPT を開く",
+    openLauncher: "Codex Route Hub を開く",
     quit: "終了",
     exportDiagnostics: "プライバシー保護済みの診断情報をエクスポート",
     cancel: "キャンセル",
     remove: "削除",
-    removeTitle: "Codex Web GPT を削除",
+    removeTitle: "Codex Route Hub を削除",
     removeMessage: "Codex から ChatGPT Web モデルを削除し、以前のモデルルートを復元しますか？",
     removeDetail: "ランチャーの ChatGPT ログインプロファイルは保持されます。Codex を一度再起動する必要があります。",
   }),
@@ -699,8 +700,7 @@ function registerIpc({ logger, stateStore }) {
           : "Run the browser smoke test before installing the Codex integration",
       );
     }
-    const result = IS_DEV_PROFILE ? await runtimeHost.setupDevCore() : await runtimeHost.setupCore();
-    if (!IS_DEV_PROFILE) await routingSwitch.setEnabled(true);
+    const result = IS_DEV_PROFILE ? await runtimeHost.setupDevCore() : await routingSwitch.install(() => runtimeHost.setupCore());
     stateStore.update({
       coreSetupComplete: true,
       codexCatalogVerified: IS_DEV_PROFILE ? true : false,
@@ -740,10 +740,10 @@ function registerIpc({ logger, stateStore }) {
       interactionMode,
     }, afterRuntimeReady);
     if (!interactionModeChange && interactionMode === "automatic") await browserHost.reveal();
-    const result = interactionModeChange
-      ? await browserHost.withInteractionModeChange(interactionMode, runSetup)
-      : await runSetup();
-    if (!IS_DEV_PROFILE) await routingSwitch.setEnabled(true);
+    const prepare = () => interactionModeChange
+      ? browserHost.withInteractionModeChange(interactionMode, runSetup)
+      : runSetup();
+    const result = IS_DEV_PROFILE ? await prepare() : await routingSwitch.install(prepare);
     const state = stateStore.update({
       browserInteractionMode: interactionMode,
       ...(interactionMode === "manual" ? { experimentalBiggerContext: false } : {}),
@@ -893,7 +893,7 @@ async function requestQuit() {
     const activeOperation = runtimeHost?.currentOperation() || browserHost?.currentOperation()
       || (routingSwitch?.inFlight ? "routing" : null);
     if (activeOperation) {
-      throw new Error(`Wait for ${activeOperation} to finish before quitting Codex Web GPT`);
+      throw new Error(`Wait for ${activeOperation} to finish before quitting Codex Route Hub`);
     }
     if (routingSwitch) await routingSwitch.setEnabled(false);
     await runtimeSupervisor?.shutdown({ cancelActiveTurns: true, force: true });
@@ -1022,6 +1022,13 @@ async function start() {
   });
   if (!IS_DEV_PROFILE) routingSwitch = new RoutingSwitch({
     host: runtimeHost, supervisor: runtimeSupervisor, store: stateStore,
+    preflight: async () => {
+      if (stateStore.read().browserInteractionMode === "automatic") await browserHost.inspectSession(true);
+    },
+    client: process.platform === "darwin"
+      && !(process.env.CODEX_ROUTE_HUB_TEST_NO_CLIENT_RESTART === "1"
+        && LAUNCHER_PROFILE.codexHome !== path.join(require("node:os").homedir(), ".codex"))
+      ? new CodexClientLifecycle() : null,
     publishState: state => send("launcher:state-changed", state), publishOperation,
   });
   if (routingSwitch) {
@@ -1177,7 +1184,7 @@ void start().catch((error) => {
     fs.appendFileSync(path.join(app.getPath("logs"), "launcher-fatal.log"), `${new Date().toISOString()} ${error?.stack || error}\n`);
   } catch {}
   try {
-    dialog.showErrorBox("Codex Web GPT could not start", message);
+    dialog.showErrorBox("Codex Route Hub could not start", message);
   } catch {}
   app.exit(1);
 });

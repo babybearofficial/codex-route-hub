@@ -63,16 +63,16 @@ export function StartupSurface({ operation, logs, disabled, onConfigure }: {
 
   return <section className="content-surface startup-surface"><div className="content-scroll startup-content">
     <header className="surface-header"><h1>启动配置</h1>
-      <p>应用内管理 Codex 路由。启动时验证本地桥与 Tunnel，停止时恢复本次启动前的配置。</p>
+      <p>应用内管理 Codex 路由。启动时先验证登录态，再退出 ChatGPT.app（Codex），等待路由就绪后重新打开。停止时恢复本次启动前的配置。</p>
     </header>
     {disabled ? <p role="alert">启动配置仅在正式运行模式可用。</p> : null}
     <div className="routing-cards" aria-live="polite">
-      <article><h2>Codex Web GPT</h2><strong>应用运行中</strong><p>停止路由后仍可在此重新启动</p></article>
+      <article><h2>Codex Route Hub</h2><strong>应用运行中</strong><p>停止路由后仍可在此重新启动</p></article>
       <article><h2>本地桥 / Tunnel</h2><strong>{status?.runtimeReady ? "运行时就绪" : ({ stopped: "已停止", failed: "运行失败", starting: "启动中", "needs-setup": "需要配置", draining: "正在停止" } as Record<string, string>)[status?.runtimeStatus || ""] || status?.runtimeStatus || "读取中…"}</strong><p>由应用统一管理进程</p></article>
       <article><h2>Codex 路由</h2><strong>{status?.busy ? "正在切换…" : status?.enabled ? "已启用" : "已停用"}</strong><p>{route}</p></article>
     </div>
     <div className="routing-actions">
-      <button className="button-primary" disabled={disabled || busy || !status} onClick={() => void change(true)}>启动路由</button>
+      <button className="button-primary" disabled={disabled || busy || !status} onClick={() => void change(true)}>启动路由并重启 Codex</button>
       <button className="button-secondary" disabled={disabled || busy || !status} onClick={() => void change(false)}>停止路由</button>
     </div>
     <p>停止路由会结束本应用管理的代理和隧道，并恢复配置。Codex App 和当前会话保持打开。</p>
