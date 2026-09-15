@@ -12,10 +12,24 @@ test('graceful shutdown readback precedes background reopening of exact target',
     if (args[3].includes('if(true)')) { running = false; return { stdout: '{"pid":123,"accepted":true}' }; }
     return { stdout: running ? '{"pid":123}' : 'null' };
   } });
-  await client.stop(); assert.equal(running, false);
-  await client.reopen();
+  assert.deepEqual(await client.stop(), { wasRunning: true }); assert.equal(running, false);
+  assert.deepEqual(await client.reopen(), { reopened: true });
   assert.deepEqual(calls.find(([exe]) => exe.endsWith('/open'))[1], ['-g', '-a', '/Applications/ChatGPT.app']);
   assert.equal(client.previous, null);
+});
+
+test('a client that was not running is reported and never launched by a recovery reopen', async () => {
+  const calls = [];
+  const client = new CodexClientLifecycle({ run: async (exe, args) => {
+    calls.push(exe);
+    if (exe.endsWith('/open')) return { stdout: '' };
+    return { stdout: 'null' };
+  } });
+  assert.deepEqual(await client.stop(), { wasRunning: false });
+  assert.equal(client.previous, null);
+  assert.deepEqual(await client.reopen({ recovery: true }), { reopened: false });
+  assert.ok(!calls.some(exe => exe.endsWith('/open')), 'recovery must not open Codex for a user who had it closed');
+  assert.equal(await client.running(), false);
 });
 
 test('quit refusal never force-kills or opens the app', async () => {

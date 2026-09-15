@@ -7,7 +7,8 @@ test('routing API authenticates, validates input and releases its server', async
   const server = await new BrowserControlServer({
     logger: { info() {}, error() {} }, getBrowserHost: () => null, getPreferences: () => ({}),
     getRouting: () => ({ status: () => ({ protocol: 'codex-routing-v1', busy: false }),
-      setEnabled: async enabled => { calls.push(enabled); return { enabled }; } }),
+      setEnabled: async enabled => { calls.push(enabled); return { enabled }; },
+      sync: async () => { calls.push('sync'); return { last: { status: 'synced' } }; } }),
   }).start();
   const { endpoint, token } = server.descriptor();
   const request = (action, body, authorized = true) => fetch(endpoint + '/v1/routing/' + action, {
@@ -19,7 +20,8 @@ test('routing API authenticates, validates input and releases its server', async
     assert.equal((await request('set', { enabled: 'false' })).status, 409);
     assert.equal((await (await request('status', {})).json()).protocol, 'codex-routing-v1');
     assert.equal((await request('set', { enabled: false })).status, 200);
-    assert.deepEqual(calls, [false]);
+    assert.equal((await (await request('sync', {})).json()).last.status, 'synced');
+    assert.deepEqual(calls, [false, 'sync']);
   } finally { await server.close(); }
   assert.equal(server.server.listening, false);
 });

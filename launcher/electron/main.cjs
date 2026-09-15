@@ -11,6 +11,7 @@ const {
   Menu,
   nativeImage,
   nativeTheme,
+  powerMonitor,
   screen,
   shell,
   Tray,
@@ -124,8 +125,14 @@ function stopCatalogVerificationMonitor() {
   catalogVerificationTimer = null;
 }
 
-function startCatalogVerificationMonitor({ logger, stateStore }) {
+// `baseline` is the catalog request count (and time) recorded before a controlled Codex
+// restart; only a newer request proves the restarted client re-read the catalog through the
+// proxy. Without one, the first health read becomes the baseline, so a request that predates
+// the change that required a restart is never accepted as evidence. The routing keeper shares
+// the same baseline.
+function startCatalogVerificationMonitor({ logger, stateStore, baseline = null }) {
   stopCatalogVerificationMonitor();
+  let reference = baseline;
   const check = async () => {
     const current = stateStore.read();
     if (current.coreSetupComplete !== true || current.codexCatalogVerified === true) {
@@ -137,8 +144,16 @@ function startCatalogVerificationMonitor({ logger, stateStore }) {
     try {
       const config = runtimeSupervisor.readConfig();
       const health = await runtimeSupervisor.proxyHealthPayload(config);
-      if (!Number.isInteger(health?.successful_model_catalog_requests)
-        || health.successful_model_catalog_requests < 1) return;
+      if (!Number.isInteger(health?.successful_model_catalog_requests)) return;
+      if (!reference) {
+        reference = { requests: health.successful_model_catalog_requests, atMs: Date.now() };
+        if (routingSwitch) routingSwitch.catalogBaseline = { ...reference };
+        return;
+      }
+      const lastAt = Date.parse(health.last_successful_model_catalog_request_at ?? "");
+      const verified = health.successful_model_catalog_requests > reference.requests
+        || (Number.isFinite(lastAt) && lastAt > reference.atMs);
+      if (!verified) return;
       const state = stateStore.update({
         codexCatalogVerified: true,
         codexRestartRequired: false,
@@ -439,6 +454,10 @@ function registerIpc({ logger, stateStore }) {
   handle("launcher:routing-set", (_event, enabled) => {
     if (!routingSwitch) throw new Error("Routing switch is unavailable in DEV mode");
     return routingSwitch.setEnabled(enabled);
+  });
+  handle("launcher:routing-sync", () => {
+    if (!routingSwitch) throw new Error("Routing switch is unavailable in DEV mode");
+    return routingSwitch.sync();
   });
   handle("launcher:snapshot", async () => ({
     profile: LAUNCHER_PROFILE.kind,
@@ -896,6 +915,7 @@ async function requestQuit() {
       throw new Error(`Wait for ${activeOperation} to finish before quitting Codex Route Hub`);
     }
     if (routingSwitch) await routingSwitch.setEnabled(false);
+    routingSwitch?.stopKeeper();
     await runtimeSupervisor?.shutdown({ cancelActiveTurns: true, force: true });
     stopCatalogVerificationMonitor();
     quitting = true;
@@ -1021,7 +1041,7 @@ async function start() {
     getBrowserInteractionMode: () => stateStore.read().browserInteractionMode,
   });
   if (!IS_DEV_PROFILE) routingSwitch = new RoutingSwitch({
-    host: runtimeHost, supervisor: runtimeSupervisor, store: stateStore,
+    host: runtimeHost, supervisor: runtimeSupervisor, store: stateStore, logger,
     preflight: async () => {
       if (stateStore.read().browserInteractionMode === "automatic") await browserHost.inspectSession(true);
     },
@@ -1029,8 +1049,24 @@ async function start() {
       && !(process.env.CODEX_ROUTE_HUB_TEST_NO_CLIENT_RESTART === "1"
         && LAUNCHER_PROFILE.codexHome !== path.join(require("node:os").homedir(), ".codex"))
       ? new CodexClientLifecycle() : null,
+    // A controlled Codex restart resets catalog evidence: only a request newer than this
+    // baseline proves the reopened client reads models through the proxy.
+    onClientRestarted: baseline => startCatalogVerificationMonitor({ logger, stateStore, baseline }),
+    refreshSession: async () => {
+      if (stateStore.read().browserInteractionMode === "automatic") await browserHost.refreshAuthentication();
+    },
     publishState: state => send("launcher:state-changed", state), publishOperation,
   });
+  if (routingSwitch && powerMonitor && typeof powerMonitor.on === "function") {
+    // Sleep/wake and screen lock are where the user sees routing "drop". The switch probes the
+    // owned runtime immediately and re-observes once the network has settled.
+    for (const event of ["resume", "unlock-screen"]) {
+      powerMonitor.on(event, () => {
+        logger.info("launcher.system_resumed", { event });
+        routingSwitch.onSystemResume({ event });
+      });
+    }
+  }
   if (routingSwitch) {
     fs.mkdirSync(path.join(CORE_HOME, "runtime"), { recursive: true, mode: 0o700 });
     fs.writeFileSync(path.join(CORE_HOME, "runtime", "routing-control.json"),
@@ -1160,9 +1196,10 @@ async function start() {
     }
   } else {
     routingSwitch.ready = () => startupAuthenticationRefresh;
-    void routingSwitch.startup().then(result => {
-      if (result.last?.ok && result.runtimeReady) startCatalogVerificationMonitor({ logger, stateStore });
-    }).catch(error => {
+    // Startup reconciles the saved intent: on keeps or re-establishes the route (restarting
+    // Codex only when the route changes), off finishes any interrupted restore. Catalog
+    // evidence is observed by the routing keeper and the restart hook above.
+    void routingSwitch.startup().catch(error => {
       logger.error("runtime.startup_failed", { message: error.message });
     });
   }

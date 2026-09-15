@@ -104,6 +104,8 @@ class BrowserControlServer {
           const body = await readJson(request, 1024);
           if (typeof body?.enabled !== "boolean") throw new Error("Routing enabled must be boolean");
           writeJson(response, 200, await routing.setEnabled(body.enabled));
+        } else if (request.url === "/v1/routing/sync" && typeof routing.sync === "function") {
+          writeJson(response, 200, await routing.sync());
         } else writeJson(response, 404, { error: "not_found" });
       } catch (error) {
         const { redactText } = require("./logging.cjs");

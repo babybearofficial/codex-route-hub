@@ -1,5 +1,18 @@
 # Routing integration validation — 2026-09-15
 
+## Continuous routing and off-restore repair (source, evening)
+
+Read-only diagnosis of the installed application's private logs and state (no credentials, URLs or private paths copied):
+
+- The launcher state said `routingDisabled=true` while `~/.codex/config.toml` still carried the managed `openai_base_url` and the journal was `active=true`; the ownership file recorded a stop refused at 17:57 because the proxy had one active HTTP turn (the 15 s drain deadline). `disable()` had flipped the intent before the runtime could be stopped, so the cards showed "已停用" for a route that was fully in effect, and the next launcher start would have skipped the proxy while Codex kept pointing at it.
+- After that refused stop the tunnel monitor stayed stopped: `performStopForSetup` cleared it before the drain and did not resume it when the runtime was kept in service.
+- The proxy child had crash recovery but no health monitor, and `powerMonitor` only re-based browser turn leases on resume; nothing re-verified proxy, tunnel or session after wake. The daemon `ECONNRESET` records were upstream stream resets during Codex turns (client-visible "Reconnecting"), not proxy exits.
+- `/healthz` reported 137 successful catalog requests while the state kept `codexCatalogVerified=false, codexRestartRequired=true`: the routing-set path never started the verification monitor, and "立即同步" only re-read the status cards.
+
+Changes: `RoutingSwitch` keeper with bounded backoff, off pipeline that quits → stops → restores → reopens Codex, startup reconciliation of intent vs. live route, controlled-restart catalog baseline, `sync()`; `RuntimeSupervisor` daemon monitor, `probeNow()`, monitor resumption after a refused drain; `powerMonitor` wiring and `launcher:routing-sync` IPC; startup surface cards driven by `routeActive`/`proxyHealthy`/`catalogVerified`. Details in `integrated-routing.md`.
+
+Results: launcher suite **332 passed, 1 skipped** (333; 23 new cases across routing switch, supervisor monitors, client lifecycle, control API and renderer wiring, including 50 enable/off cycles with no retained promise or timer); Python compatibility **58 passed**. Per AGENTS.md no renderer build, package or live Codex/launcher restart was performed in this pass; the installed application still runs the previous code. While this pass was in progress the installed application completed a clean off at 21:35 (graceful daemon exit, `route disconnect`, journal archived, `config.toml` restored), so the live state is now consistent: intent off, no managed route, runtime stopped. A read-only run of the new `routeActive()` against the live journal and config agreed (`false`).
+
 ## Codex Route Hub follow-up acceptance
 
 - Fork application renamed to **Codex Route Hub**, bundle ID `dev.babybear.codexroutehub`, installed at `/Applications/Codex Route Hub.app`. The former installed application is retained in a private migration backup. Existing private profile paths are preserved to retain login and settings.

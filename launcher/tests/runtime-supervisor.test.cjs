@@ -1203,6 +1203,129 @@ test("stopping a tunnel monitor invalidates results from its previous generation
   }
 });
 
+test("daemon monitor hands a proxy that stops answering to crash recovery only after sustained failure", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-daemon-monitor-"));
+  const operations = [];
+  const states = [];
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "0.2.0", isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root,
+    coreHome: root,
+    browserDescriptorPath: path.join(root, "launcher.json"),
+    publishOperation: operation => operations.push(operation),
+  });
+  const child = { pid: 424_242, exitCode: null, signalCode: null };
+  let healthy = false;
+  let stops = 0;
+  const recoveries = [];
+  supervisor.daemon = child;
+  supervisor.proxyHealth = async (_config, _timeout, pid) => { assert.equal(pid, child.pid); return healthy; };
+  supervisor.stopChild = async name => { stops += 1; assert.equal(name, "daemon"); supervisor.daemon = null; };
+  supervisor.tryWriteState = (status, detail) => { states.push([status, detail]); return true; };
+  supervisor.scheduleRecovery = name => recoveries.push(name);
+  try {
+    supervisor.startDaemonMonitor({ mode: "browser-only" });
+    assert.ok(supervisor.daemonMonitorTimer);
+    await supervisor.daemonMonitorTick();
+    await supervisor.daemonMonitorTick();
+    assert.equal(supervisor.daemonMonitorFailures, 2);
+    assert.equal(stops, 0, "two failures are not yet evidence");
+    healthy = true;
+    await supervisor.daemonMonitorTick();
+    assert.equal(supervisor.daemonMonitorFailures, 0, "a healthy answer resets the failure streak");
+    healthy = false;
+    await supervisor.daemonMonitorTick();
+    await supervisor.daemonMonitorTick();
+    await supervisor.daemonMonitorTick();
+    assert.equal(stops, 1);
+    assert.deepEqual(recoveries, ["daemon"]);
+    assert.equal(states.at(-1)[0], "degraded");
+    assert.match(states.at(-1)[1], /stopped answering health checks/);
+    assert.match(supervisor.lastChildFailure.daemon, /stopped answering/);
+    assert.equal(supervisor.daemonMonitorTimer, null, "the monitor stops until recovery restarts it");
+    assert.equal(operations.at(-1).name, "runtime-recovery");
+    // A tick from the retired generation cannot act again.
+    healthy = false;
+    supervisor.daemon = child;
+    assert.equal(supervisor.daemonMonitorTick, null);
+  } finally {
+    supervisor.stopDaemonMonitor();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("system resume probes both monitors immediately without lowering their thresholds", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-probe-now-"));
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "0.2.0", isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root,
+    coreHome: root,
+    browserDescriptorPath: path.join(root, "launcher.json"),
+  });
+  const child = { pid: 424_243, exitCode: null, signalCode: null };
+  let daemonProbes = 0;
+  let tunnelProbes = 0;
+  let stops = 0;
+  supervisor.daemon = child;
+  supervisor.tunnel = { pid: 424_244, managed: true };
+  supervisor.proxyHealth = async () => { daemonProbes += 1; return false; };
+  supervisor.observeTunnelForMonitor = async () => { tunnelProbes += 1; return { statusKnown: true, ready: true, pid: 424_244 }; };
+  supervisor.stopChild = async () => { stops += 1; };
+  try {
+    supervisor.startDaemonMonitor({ mode: "full" });
+    supervisor.startTunnelMonitor({ mode: "full", tunnel: { alias: "codex-chatgpt-web" } });
+    await supervisor.probeNow();
+    await supervisor.probeNow();
+    assert.equal(daemonProbes, 2);
+    assert.equal(tunnelProbes, 2);
+    assert.equal(supervisor.daemonMonitorFailures, 2);
+    assert.equal(stops, 0, "a wake-up probe alone never restarts the proxy");
+    supervisor.stopDaemonMonitor();
+    supervisor.stopTunnelMonitor();
+    await supervisor.probeNow();
+    assert.equal(daemonProbes, 2, "stopped monitors have nothing to probe");
+  } finally {
+    supervisor.stopDaemonMonitor();
+    supervisor.stopTunnelMonitor();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a refused drain leaves the runtime in service and resumes its monitors", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-refused-drain-monitor-"));
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "0.2.0", isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root,
+    coreHome: root,
+    browserDescriptorPath: path.join(root, "launcher.json"),
+  });
+  const child = { pid: 424_245, exitCode: null, signalCode: null };
+  supervisor.daemon = child;
+  supervisor.readConfig = () => ({ mode: "browser-only" });
+  supervisor.readState = () => null;
+  supervisor.proxyHealth = async () => true;
+  supervisor.acquireDrain = async () => {
+    throw new Error("Refusing to stop launcher-owned runtime because atomic idleness could not be proven: daemon has 1 active HTTP turn(s)");
+  };
+  supervisor.ownedRuntimeReady = async () => true;
+  const states = [];
+  supervisor.tryWriteState = (status, detail) => { states.push([status, detail]); return true; };
+  try {
+    supervisor.startDaemonMonitor({ mode: "browser-only" });
+    await assert.rejects(supervisor.stopForSetup(), /1 active HTTP turn/);
+    assert.equal(states.at(-1)[0], "ready");
+    assert.equal(supervisor.daemon, child, "the serving daemon is retained");
+    assert.ok(supervisor.daemonMonitorTimer, "the daemon monitor is running again after the refused stop");
+    assert.equal(supervisor.stopping, false);
+  } finally {
+    supervisor.stopDaemonMonitor();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("launcher shutdown reacquires a managed tunnel that was between monitor and recovery states", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-tunnel-stop-reconcile-"));
   const supervisor = new RuntimeSupervisor({

@@ -122,16 +122,26 @@ export interface LauncherSnapshot {
 
 export interface RoutingStatus {
   protocol: "codex-routing-v1";
+  /** Saved user intent: routing on (true) or off (false). */
   enabled: boolean;
   busy: boolean;
+  /** Owned runtime is ready and the proxy answered its most recent health probe. */
   runtimeReady: boolean;
   runtimeStatus?: string;
-  last: { ok: boolean; status: string; message?: string } | null;
+  runtimeDetail?: string | null;
+  /** Live evidence from the Codex config: true/false, or null when it could not be read. */
+  routeActive?: boolean | null;
+  proxyHealthy?: boolean | null;
+  observedAt?: string | null;
+  catalogVerified?: boolean;
+  codexRestartRequired?: boolean;
+  last: { ok: boolean; status: string; message?: string; clientRestarted?: boolean } | null;
 }
 
 export interface LauncherApi {
   routingStatus(): Promise<RoutingStatus>;
   setRouting(enabled: boolean): Promise<RoutingStatus>;
+  syncRouting(): Promise<RoutingStatus>;
   snapshot(): Promise<LauncherSnapshot>;
   setLanguage(language: Language): Promise<LauncherState>;
   openSocial(target: "github" | "x"): Promise<LauncherState>;

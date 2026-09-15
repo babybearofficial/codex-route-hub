@@ -22,6 +22,8 @@ const TUNNEL_START_TIMEOUT_MS = 120_000;
 const TUNNEL_HEALTH_POLL_INTERVAL_MS = 1_000;
 const TUNNEL_MONITOR_INTERVAL_MS = 10_000;
 const TUNNEL_MONITOR_FAILURE_THRESHOLD = 3;
+const DAEMON_MONITOR_INTERVAL_MS = 10_000;
+const DAEMON_MONITOR_FAILURE_THRESHOLD = 3;
 const TUNNEL_MCP_FAILURE_RECENCY_MS = 2 * 60_000;
 const BOOT_TIME_CLOCK_TOLERANCE_MS = 5_000;
 const CURRENT_BOOT_STARTED_AT_MS = Date.now() - (os.uptime() * 1_000);
@@ -351,6 +353,12 @@ class RuntimeSupervisor {
     this.tunnelMonitorFailures = 0;
     this.tunnelMonitorObservationUnavailable = false;
     this.tunnelMonitorGeneration = 0;
+    this.tunnelMonitorTick = null;
+    this.daemonMonitorTimer = null;
+    this.daemonMonitorInFlight = false;
+    this.daemonMonitorFailures = 0;
+    this.daemonMonitorGeneration = 0;
+    this.daemonMonitorTick = null;
     this.tunnelHealthBaseUrl = null;
     this.recoveryTasks = new Set();
     this.expectedExits = new WeakSet();
@@ -512,6 +520,7 @@ class RuntimeSupervisor {
       const restartable = this.restartableChildren.has(child);
       this.restartableChildren.delete(child);
       if (this[name] === child) this[name] = null;
+      if (name === "daemon") this.stopDaemonMonitor();
       const detail = error
         ? `${name} failed to start: ${error.message}`
         : `${name} exited (${signal || code})`
@@ -1062,13 +1071,13 @@ class RuntimeSupervisor {
       this.publishOperation?.({ name: "runtime-recovery", status: "running", message });
       this.scheduleRecovery("tunnel");
     };
-    this.tunnelMonitorTimer = setInterval(() => {
+    this.tunnelMonitorTick = () => {
       if (this.stopping
         || generation !== this.tunnelMonitorGeneration
         || this.tunnelMonitorInFlight
-        || this.restartTimers.tunnel) return;
+        || this.restartTimers.tunnel) return undefined;
       this.tunnelMonitorInFlight = true;
-      void this.observeTunnelForMonitor(config).then((health) => {
+      return this.observeTunnelForMonitor(config).then((health) => {
         if (this.stopping || generation !== this.tunnelMonitorGeneration) return;
         if (!health.statusKnown) {
           if (!this.tunnelMonitorObservationUnavailable) {
@@ -1104,16 +1113,88 @@ class RuntimeSupervisor {
       }).finally(() => {
         this.tunnelMonitorInFlight = false;
       });
-    }, TUNNEL_MONITOR_INTERVAL_MS);
+    };
+    this.tunnelMonitorTimer = setInterval(() => { void this.tunnelMonitorTick?.(); }, TUNNEL_MONITOR_INTERVAL_MS);
     this.tunnelMonitorTimer.unref?.();
   }
 
   stopTunnelMonitor() {
     if (this.tunnelMonitorTimer) clearInterval(this.tunnelMonitorTimer);
     this.tunnelMonitorTimer = null;
+    this.tunnelMonitorTick = null;
     this.tunnelMonitorFailures = 0;
     this.tunnelMonitorObservationUnavailable = false;
     this.tunnelMonitorGeneration += 1;
+  }
+
+  // The daemon exit handler covers a crashed proxy. This monitor covers the other failure the
+  // user sees as "disconnected": a proxy process that is alive but no longer answers, for
+  // example after sleep/wake. Sustained failure hands the child to the ordinary recovery path.
+  startDaemonMonitor(config) {
+    this.stopDaemonMonitor();
+    if (this.launcherProfile === "development") return;
+    const generation = this.daemonMonitorGeneration;
+    this.daemonMonitorTick = async () => {
+      if (this.stopping
+        || generation !== this.daemonMonitorGeneration
+        || this.daemonMonitorInFlight
+        || this.restartTimers.daemon) return;
+      const child = this.daemon;
+      if (!child || !Number.isInteger(child.pid) || child.exitCode !== null || child.signalCode !== null) return;
+      this.daemonMonitorInFlight = true;
+      try {
+        const healthy = await this.proxyHealth(config, 2_000, child.pid);
+        if (this.stopping || generation !== this.daemonMonitorGeneration || this.daemon !== child) return;
+        if (healthy) {
+          if (this.daemonMonitorFailures > 0) {
+            this.logger.info("runtime.daemon_monitor_recovered", { pid: child.pid, failures: this.daemonMonitorFailures });
+          }
+          this.daemonMonitorFailures = 0;
+          return;
+        }
+        this.daemonMonitorFailures += 1;
+        this.logger.warn("runtime.daemon_monitor_unhealthy", {
+          consecutiveFailures: this.daemonMonitorFailures,
+          pid: child.pid,
+        });
+        if (this.daemonMonitorFailures < DAEMON_MONITOR_FAILURE_THRESHOLD) return;
+        const message = `Responses proxy ${child.pid} stopped answering health checks`
+          + ` ${DAEMON_MONITOR_FAILURE_THRESHOLD} times in a row; restarting it`;
+        this.lastChildFailure.daemon = message;
+        this.stopDaemonMonitor();
+        try {
+          await this.stopChild("daemon");
+        } catch (error) {
+          this.logger.error("runtime.daemon_monitor_stop_failed", { message: errorMessage(error) });
+          if (processRunning(child.pid)) return;
+        }
+        if (!this.tryWriteState("degraded", message)) return;
+        this.publishOperation?.({ name: "runtime-recovery", status: "running", message });
+        this.scheduleRecovery("daemon");
+      } finally {
+        this.daemonMonitorInFlight = false;
+      }
+    };
+    this.daemonMonitorTimer = setInterval(() => { void this.daemonMonitorTick?.(); }, DAEMON_MONITOR_INTERVAL_MS);
+    this.daemonMonitorTimer.unref?.();
+  }
+
+  stopDaemonMonitor() {
+    if (this.daemonMonitorTimer) clearInterval(this.daemonMonitorTimer);
+    this.daemonMonitorTimer = null;
+    this.daemonMonitorTick = null;
+    this.daemonMonitorFailures = 0;
+    this.daemonMonitorGeneration += 1;
+  }
+
+  // Run both monitors immediately (for example after system resume) instead of waiting for the
+  // next interval. Failure thresholds are unchanged, so a single wake-up probe cannot restart
+  // anything by itself.
+  probeNow() {
+    const probes = [];
+    if (this.daemonMonitorTick) probes.push(Promise.resolve().then(() => this.daemonMonitorTick?.()));
+    if (this.tunnelMonitorTick) probes.push(Promise.resolve().then(() => this.tunnelMonitorTick?.()));
+    return Promise.allSettled(probes);
   }
 
   async startDaemon(config) {
@@ -1254,6 +1335,7 @@ class RuntimeSupervisor {
       this.restartHistory.daemon = [];
       this.restartHistory.tunnel = [];
       this.writeState("ready");
+      if (!tunnelOnly) this.startDaemonMonitor(config);
       this.publishOperation?.({
         name: "runtime-start",
         status: "completed",
@@ -1348,6 +1430,7 @@ class RuntimeSupervisor {
         : "Recovered runtime could not persist launcher ownership";
       throw new Error(message);
     }
+    if (!tunnelOnly) this.startDaemonMonitor(config);
     this.publishOperation?.({ name: "runtime-recovery", status: "completed", message: `${name} recovered` });
   }
 
@@ -1927,6 +2010,7 @@ class RuntimeSupervisor {
     const config = this.readConfig();
     this.stopping = true;
     this.stopTunnelMonitor();
+    this.stopDaemonMonitor();
     for (const name of ["daemon", "tunnel"]) {
       if (this.restartTimers[name]) {
         clearTimeout(this.restartTimers[name]);
@@ -2016,6 +2100,13 @@ class RuntimeSupervisor {
         }
       }
       this.tryWriteState(restoredReady ? "ready" : "failed", message);
+      if (restoredReady) {
+        // The runtime stays in service (for example a refused drain while a Codex turn is
+        // active), so its monitors must resume instead of leaving it unsupervised.
+        this.stopping = false;
+        if (this.daemon) this.startDaemonMonitor(config);
+        if (config.mode === "full" && this.tunnel && !this.tunnelMonitorTimer) this.startTunnelMonitor(config);
+      }
       throw new Error(message);
     } finally {
       this.stopping = false;
@@ -2031,6 +2122,7 @@ class RuntimeSupervisor {
     this.logger.warn("runtime.forced_shutdown_started", { message: errorMessage(reason) });
     this.stopping = true;
     this.stopTunnelMonitor();
+    this.stopDaemonMonitor();
     for (const name of ["daemon", "tunnel"]) {
       if (this.restartTimers[name]) {
         clearTimeout(this.restartTimers[name]);
@@ -2085,6 +2177,8 @@ class RuntimeSupervisor {
 }
 
 module.exports = {
+  DAEMON_MONITOR_FAILURE_THRESHOLD,
+  DAEMON_MONITOR_INTERVAL_MS,
   MAX_RESTARTS_PER_WINDOW,
   RESTART_WINDOW_MS,
   TUNNEL_HEALTH_POLL_INTERVAL_MS,

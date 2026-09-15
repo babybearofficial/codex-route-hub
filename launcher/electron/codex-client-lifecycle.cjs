@@ -32,10 +32,16 @@ class CodexClientLifecycle {
     return JSON.parse(result.stdout.trim());
   }
 
+  async running() {
+    return Boolean(await this.inspect());
+  }
+
+  // Resolves to { wasRunning } once the exact client is gone. A declined quit or a quit that
+  // does not finish within the bounded wait throws before any configuration is touched.
   async stop() {
     const previous = await this.inspect();
     this.previous = previous;
-    if (!previous) return;
+    if (!previous) return { wasRunning: false };
     const result = await this.inspect(true);
     if (result && result.accepted !== true) throw new Error('Codex declined to quit; finish or save the active task and retry');
     const deadline = this.now() + 30_000;
@@ -43,10 +49,13 @@ class CodexClientLifecycle {
       if (this.now() >= deadline) throw new Error('Codex did not finish quitting within 30 seconds; no force termination was attempted');
       await this.pause(400);
     }
+    return { wasRunning: true };
   }
 
-  async reopen({ recovery = false } = {}) {
-    if (recovery && !this.previous) return;
+  // `recovery` (alias `ifPrevious`) reopens only a client that this lifecycle stopped, so a
+  // restore path never launches Codex for a user who did not have it open.
+  async reopen({ recovery = false, ifPrevious = recovery } = {}) {
+    if (ifPrevious && !this.previous) return { reopened: false };
     // open -g preserves focus. Wait for actual process readback, not just exit 0.
     await this.run('/usr/bin/open', ['-g', '-a', this.appPath], { timeout: 15_000, maxBuffer: 64 * 1024 });
     const deadline = this.now() + 20_000;
@@ -55,6 +64,7 @@ class CodexClientLifecycle {
       await this.pause(400);
     }
     this.previous = null;
+    return { reopened: true };
   }
 }
 

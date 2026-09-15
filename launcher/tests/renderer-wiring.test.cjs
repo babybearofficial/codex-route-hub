@@ -255,6 +255,25 @@ test("saved ChatGPT authentication is refreshed before setup is presented", () =
   assert.match(appSource, /browser\?\.status === "loading" \? copy\.checkingSignIn/);
 });
 
+test("routing sync and wake handling are wired from the startup surface to the routing switch", () => {
+  const startupSource = fs.readFileSync(path.join(launcherRoot, "src", "StartupSurface.tsx"), "utf8");
+  const typesSource = fs.readFileSync(path.join(launcherRoot, "src", "types.ts"), "utf8");
+  assert.match(preloadSource, /syncRouting:[\s\S]*?launcher:routing-sync/);
+  assert.match(typesSource, /syncRouting\(\): Promise<RoutingStatus>/);
+  assert.match(typesSource, /routeActive\?: boolean \| null/);
+  assert.match(electronMain, /handle\("launcher:routing-sync"[\s\S]*?routingSwitch\.sync\(\)/);
+  assert.match(startupSource, /api!\.syncRouting\(\)/);
+  // Cards describe live evidence, never the saved intent alone.
+  assert.match(startupSource, /status\.routeActive === true \? "已停用，但配置仍指向代理"/);
+  assert.match(startupSource, /status\.routeActive === false \? "已启用，但路由未生效"/);
+  assert.match(startupSource, /status\.runtimeStatus === "ready" && status\.proxyHealthy === false/);
+  // Startup re-verification and Codex restart evidence flow through the switch, not a UI refresh.
+  assert.match(electronMain, /onClientRestarted: baseline => startCatalogVerificationMonitor\(\{ logger, stateStore, baseline \}\)/);
+  assert.match(electronMain, /for \(const event of \["resume", "unlock-screen"\]\)[\s\S]*?powerMonitor\.on\(event[\s\S]*?routingSwitch\.onSystemResume\(\{ event \}\)/);
+  assert.match(electronMain, /if \(routingSwitch\) await routingSwitch\.setEnabled\(false\);\s*routingSwitch\?\.stopKeeper\(\);/);
+  assert.doesNotMatch(electronMain, /startCatalogVerificationMonitor\(\{ logger, stateStore \}\);\s*\}\)\.catch/);
+});
+
 test("completed model setup remains a repeatable capability probe", () => {
   assert.match(appSource, /<SetupRow[\s\S]*?onAction=\{install\}[\s\S]*?repeatable/);
   assert.match(appSource, /complete && !repeatable/);
