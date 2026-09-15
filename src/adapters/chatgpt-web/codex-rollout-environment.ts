@@ -20,9 +20,76 @@ import type {
   ChatGptThreadSpawnLineage,
   ChatGptTurnEnvironment,
   ChatGptUnattributedEnvironmentMessage,
+  ChatGptTurnIdentity,
+  ChatGptTurnUserRevision,
 } from "./environment";
 
 type RolloutIdentity = ChatGptRootThreadMetadata | ChatGptThreadSpawnLineage;
+
+/** Authenticate a context-only root-task resume against native, local history.
+ * No request text or cache entry can authorize replay of an interrupted instruction.
+ */
+export function isNativeInterruptedTurnResume(
+  codexHome: string,
+  identity: ChatGptTurnIdentity,
+  source: ChatGptTurnUserRevision,
+): boolean {
+  if (!identity.threadId || !identity.turnId || !source.turnId || !source.itemId
+    || identity.parentThreadId || identity.subagentKind
+    || ![identity.threadId, identity.turnId, source.turnId].every(id => CODEX_ID.test(id))) return false;
+  const lineage: ChatGptRootThreadMetadata = { threadId: identity.threadId, sandboxType: "platform", workspaceRoots: [] };
+  try {
+    const indexed = indexedRollout(configuredSqliteHome(codexHome), lineage);
+    const candidates = indexed.kind === "found" ? [indexed.path] : scanCanonicalRollouts(codexHome, identity.threadId);
+    if (candidates.length !== 1) return false;
+    const file = validateRolloutPath(codexHome, candidates[0]!, identity.threadId);
+    const fd = openSync(file, "r");
+    try {
+      const size = fstatSync(fd).size;
+      validateSessionMeta(firstRolloutRecord(fd, size), lineage);
+      if (latestTurnContext(fd, size)?.turn_id !== identity.turnId) return false;
+      // Bounded tail; a source outside this window cannot authorize an automatic resume.
+      const length = Math.min(size, 16 * 1024 * 1024);
+      const tail = Buffer.alloc(length);
+      if (readSync(fd, tail, 0, length, size - length) !== length) return false;
+      const lines = tail.toString("utf8").split("\n");
+      if (length < size) lines.shift();
+      lines.pop(); // Ignore an incomplete trailing record, including a concurrent append.
+      let sourceFound = false, interrupted = false, started = false, context = false;
+      for (const line of lines) {
+        if (!line) continue;
+        const entry = record(JSON.parse(line));
+        const payload = record(entry?.payload);
+        if (!payload) continue;
+        if (entry?.type === "response_item" && payload.role === "user") {
+          const metadata = record(payload.internal_chat_message_metadata_passthrough);
+          if (payload.id === source.itemId) {
+            sourceFound = metadata?.turn_id === source.turnId && isDeepStrictEqual(payload.content, source.content);
+          } else if (sourceFound) {
+            const kinds = metadata?.content_item_kinds;
+            // Only native contextual records may follow the original instruction.
+            if (!Array.isArray(kinds) || kinds.length === 0 || kinds.some(kind => ![
+              "generic.turn_aborted", "plugins.recommendations", "agents_md.instructions", "environments.environment_context",
+            ].includes(String(kind)))) return false;
+          }
+        }
+        if (entry?.type === "event_msg" && sourceFound) {
+          if (payload.type === "turn_aborted" && payload.turn_id === source.turnId && !started) interrupted = true;
+          if (payload.type === "task_started") {
+            if (!interrupted || payload.turn_id !== identity.turnId || started) return false;
+            started = true;
+          }
+          if (started && ["turn_aborted", "task_complete"].includes(String(payload.type))) return false;
+        }
+        if (entry?.type === "turn_context" && started) {
+          if (payload.turn_id !== identity.turnId) return false;
+          context = true;
+        }
+      }
+      return sourceFound && interrupted && started && context;
+    } finally { closeSync(fd); }
+  } catch { return false; }
+}
 
 const CODEX_ID_SOURCE = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const CODEX_ID = new RegExp(`^${CODEX_ID_SOURCE}$`, "i");

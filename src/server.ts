@@ -560,10 +560,9 @@ export async function responseRequest(
     // trace tombstone; preserve the adapter's existing strict validation/error path below.
     const message = error instanceof Error ? error.message : String(error);
     if (message === CHATGPT_TURN_REVISION_CONFLICT_MESSAGE) {
-      // Codex can reopen an interrupted task with only refreshed developer/skill context under a
-      // new turn_id. Its last human prompt still belongs to the stopped turn and must not be
-      // replayed as new work. HTTP 400 makes that malformed recovery request terminal instead of
-      // allowing Codex to retry it as an upstream 502.
+      // Verified native interrupted-task resumes have already passed revision validation.
+      // Without that local proof an older prompt must not be replayed as new work. Return a
+      // terminal error rather than allowing an unverified request to loop as an upstream 502.
       return formatErrorResponse(400, "invalid_request_error", message);
     }
     if (!message.includes("requires native Codex turn_id metadata")

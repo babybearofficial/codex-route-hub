@@ -3,6 +3,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isReadableCompactionSummaryText, OPAQUE_COMPACTION_NOTE } from "../../responses/compaction";
 import type { CodexContentPart, CodexParsedRequest, CodexTool } from "../../types";
 import { isAcceptedCompactionContinuation } from "./compaction-continuation";
+import { isNativeInterruptedTurnResume } from "./codex-rollout-environment";
 
 export type ChatGptSandboxPolicy =
   | { type: "dangerFullAccess" }
@@ -227,7 +228,8 @@ export function extractChatGptTurnUserRevision(parsed: CodexParsedRequest): unkn
   // checkpoint; an arbitrary older prompt is still not a new instruction or a valid handoff.
   if (revision.turnId !== undefined && revision.turnId !== turnId
     && (priorChatGptAbortedTurnIds(parsed).includes(revision.turnId)
-      || !isAcceptedCompactionContinuation(parsed, identity, revision))) {
+      || !isAcceptedCompactionContinuation(parsed, identity, revision))
+    && !isNativeInterruptedTurnResume(process.env.CODEX_HOME || join(homedir(), ".codex"), identity, revision)) {
     throw new Error(CHATGPT_TURN_REVISION_CONFLICT_MESSAGE);
   }
   return revision.content;

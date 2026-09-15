@@ -48,3 +48,14 @@ The following sections record the earlier integration baseline, before the appli
 - Final packaged off returned success and restored the immediate pre-activation config byte-for-byte; current Codex configuration remained unchanged.
 - Normal user profile reopened in the background with routing disabled. Native API reports `enabled=false`, `busy=false`, `runtimeReady=false`, `runtimeStatus=stopped`; no listener remains on 17841.
 - Generated isolated profiles and copied credentials were removed after verification; only sanitized receipts/screenshots remain in ignored `launcher/artifacts`. The old application ZIP backup is retained privately.
+
+## Native interrupted-task resume repair
+
+- Root cause: a context-only native recovery creates a new turn ID while retaining the interrupted turn's original user item. The former unconditional revision mismatch check rejected this valid native recovery.
+- The bridge now checks the local canonical root rollout: exact thread/item/content, prior interruption, new task start, current turn context, and no subsequent user instruction or terminal event. Missing, ambiguous or out-of-window history remains rejected. Subagent claims cannot use this root-only exception.
+- Recovery checks retain no global authorization cache, close the file descriptor on every path, and read at most a 16 MiB tail for instruction proof.
+- 123 related tests passed, including forged/missing history, cancellation/completion, stale instructions and repeated validation. Root TypeScript check passed.
+- Replay of the reported native failure at its original turn-context boundary passed the new authorization check. The actual now-finished native turn remains rejected. No audit message or command was replayed against the user's project.
+- Signed package installed and its bundled runtime copied transactionally through the launcher's manifest validator. The proxy was drained only with zero active HTTP/browser turns, then gracefully shut down through the authenticated control endpoint; the launcher supervisor restarted it with the new code.
+- Final live readback: routing enabled, runtime ready, not busy; new proxy accepting requests. Installed/managed CLI hashes match, Codex config hash is unchanged, and the ChatGPT client PID remained 91729. Installed deep/strict signature validation passed. The previous app remains in a private backup.
+- This proves installation and recorded-failure recovery validation; a new remote ChatGPT audit execution was not submitted on the user's behalf.
