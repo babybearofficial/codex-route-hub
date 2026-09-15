@@ -1,23 +1,37 @@
-# Routing integration validation — 2026-09-13
+# Routing integration validation — 2026-09-15
 
-## Verified
+## Source and build
 
-- Fork created at `babybearofficial/codex-chatgpt-web`, based on upstream `e85e369` (5.0.6).
-- Native routing, IPC wiring, authenticated loopback control, supervisor, host, persistence and existing non-compiling CJS regression tests: **294 passed**, **1 skipped** (Linux-only AppImage process identity).
-- Python routing and compatibility protocol: **58 passed**.
-- The modified native routing/HTTP/wiring subset was rerun after final metadata/state handling changes and passed.
-- Native routing stress test: **50 enable/disable cycles**, one retained transition at a time; its in-flight reference clears after success and failure.
-- Hidden Python GUI test before source migration: **25 create/operate/destroy cycles**, operation threads return to one main thread, logs stay at <=400 lines. Live Python allocations sampled at cycles 5/15/25 were 9,557/10,985/12,204 bytes. This is bounded-run evidence, not a guarantee about third-party Electron memory under arbitrary workloads.
-- Official 5.0.6 CLI in an isolated directory restored a custom original provider URL and unrelated settings **byte-for-byte** after connect/disconnect.
-- Live legacy runtime was stopped and previous config restored; no Web GPT runtime PIDs remain. Codex App was not stopped or restarted.
-- New-file manifest checked for unexpected data artifacts and credential-like tokens; no runtime configuration, private descriptors or account data included.
+- Fork: `babybearofficial/codex-chatgpt-web`, branch `codex/integrated-routing`, upstream base `e85e369` (5.0.6).
+- Native startup submenu and configuration UI implemented; source keeps the application running when routing stops.
+- Launcher tests: **302 passed, 1 skipped** (Linux-only AppImage process identity).
+- Python compatibility: **58 passed**. Runtime integration/tunnel/lifecycle subset: **73 passed**.
+- Root and renderer TypeScript checks passed. Renderer and native runtime bundle built with pinned Bun 1.4.0.
+- macOS arm64 package built and ad-hoc signature verified. Final installed-build checks are recorded below after execution.
 
-## Not run
+## Real isolated acceptance
 
-- Application compilation, packaging, installation and new renderer execution: **NOT_RUN**, per the user's no-unrequested-build instruction.
-- Upstream localization tests call `typescript.transpileModule` and were excluded from the no-build run.
-- Full packaged-app end-to-end verification and remote ChatGPT connector attachment: **NOT_RUN** for the integrated build. One legacy runtime start passed doctor, but later repeat attempts exposed upstream 5-second tunnel discovery timeouts. That is not acceptance evidence for the new build.
+- Separate persistent core, launcher and CODEX_HOME directories; the live Codex configuration was not used for activation. Codex App was not stopped or restarted.
+- The old five-second tunnel lookup failure reproduced. Local-only discovery also reproduced a real client response of `runtime_state=ready` and `live_runtime.found=false`; the corrected bounded status fallback passed repeated real activation.
+- Two source-instance GUI activations passed all local doctor checks: authenticated browser, installed model route, launcher process ownership, Responses proxy, tunnel ownership and readiness.
+- Browser-side verification found the ChatGPT connector `Codex Native2`. Connector availability is not a proof that a particular remote tool call reached this tunnel.
+- Stop succeeded. The second stop restored the immediate pre-activation configuration byte-for-byte, and the live Codex config remained unchanged during each action.
+- During first installation, a Codex capability probe updated an unrelated marketplace timestamp in the isolated configuration. Official restoration preserved that unrelated change. It was not a residual Web GPT route.
 
-Temporary Electron npm test dependency was installed with `--ignore-scripts`. No Electron binary download/install hook, TypeScript compilation, runtime bundle build or app packaging was executed.
+## Resource checks
 
-Before asking the user to refresh/restart Codex App, obtain authorization for the integrated application build, validate enable/off/enable through the packaged GUI, verify owned proxy/tunnel and model-list readback, then verify the remote connector as applicable. Current Codex work must remain running during this process.
+- Native transition stress: 50 enable/off cycles, one retained operation maximum, cleared in-flight reference on success and failure.
+- Native renderer: 60 page mount/unmount cycles. Collected JS heap at 10/30/60 cycles: 7,009,752 / 7,204,432 / 7,294,312 bytes. Backing storage remained approximately 569 KB; embedder heap did not grow monotonically. Logs retain at most 300 rows; refresh has one serialized request and a timer cancelled on unmount.
+- Legacy Python GUI: 25 create/operate/destroy cycles; threads return to one main thread and logs stay at <=400 lines.
+- These are bounded-run observations, not an absolute claim about arbitrary third-party Electron or browser workloads.
+
+## Deployment acceptance
+
+- Final signed build installed at `/Applications/Codex Web GPT.app`; the previous app was backed up privately before replacement.
+- Confirmed acceptance process executable is the installed application and `snapshot.packaged=true`.
+- Packaged GUI activation passed all local runtime checks. Browser-side connector verification passed again.
+- MCP page: no premature-restart blocking banner, verification button enabled with `codexCatalogVerified=false`. Settings navigation to Startup Configuration passed.
+- Authenticated model readback using the installed Codex CLI version 0.147.0 returned **11 models**, including **5 ChatGPT Web models**. A preliminary request with an obsolete 0.114.0 version was rejected by the upstream catalog and was not treated as acceptance.
+- Final packaged off returned success and restored the immediate pre-activation config byte-for-byte; current Codex configuration remained unchanged.
+- Normal user profile reopened in the background with routing disabled. Native API reports `enabled=false`, `busy=false`, `runtimeReady=false`, `runtimeStatus=stopped`; no listener remains on 17841.
+- Generated isolated profiles and copied credentials were removed after verification; only sanitized receipts/screenshots remain in ignored `launcher/artifacts`. The old application ZIP backup is retained privately.

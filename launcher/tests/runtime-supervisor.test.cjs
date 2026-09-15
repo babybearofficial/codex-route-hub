@@ -1961,3 +1961,23 @@ server.listen(config.port, config.host);
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("ready inventory without live admin uses bounded status fallback", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "routing-health-fallback-"));
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "0.2.0", isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} }, sourceRoot: root,
+    coreHome: root, browserDescriptorPath: path.join(root, "launcher.json"),
+  });
+  const calls = [];
+  supervisor.runTunnelCommand = async (_config, args, timeout) => {
+    calls.push({ args, timeout });
+    return { code: 0, output: JSON.stringify(args[1] === "cleanup"
+      ? { entries: [{ alias: "owned", runtime_state: "ready", live_runtime: { found: false } }] }
+      : { local: { effective_health: { base_url: "http://127.0.0.1:43127" } } }) };
+  };
+  try {
+    assert.equal(await supervisor.discoverTunnelHealthBaseUrl({ tunnel: { alias: "owned" } }), "http://127.0.0.1:43127");
+    assert.deepEqual(calls[1], { args: ["runtimes", "status", "owned", "--json"], timeout: 20_000 });
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

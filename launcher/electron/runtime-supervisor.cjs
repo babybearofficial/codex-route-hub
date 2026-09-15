@@ -787,10 +787,20 @@ class RuntimeSupervisor {
     if (result.code !== 0) throw new Error(`Local tunnel inventory failed: ${tunnelControlDiagnostic(result)}`);
     const inventory = JSON.parse(result.output);
     const entry = inventory.entries?.find(item => item?.alias === tunnel.alias);
-    const baseUrl = loopbackHealthBaseURL(entry?.live_runtime?.base_url);
-    if (!baseUrl || entry?.live_runtime?.found !== true) {
-      throw new Error("Local tunnel inventory returned no verified loopback endpoint");
+    let baseUrl = entry?.live_runtime?.found === true
+      ? loopbackHealthBaseURL(entry.live_runtime.base_url) : null;
+    if (!baseUrl) {
+      // v0.0.12 can report ready with live_runtime.found=false. In that case
+      // only status exposes the effective local health URL. Its optional remote
+      // lookup exceeds five seconds on real networks; keep a bounded 20s fallback.
+      const status = await this.runTunnelCommand(config,
+        ["runtimes", "status", tunnel.alias, "--json"], 20_000, "Tunnel health URL discovery");
+      if (status.code !== 0) throw new Error(`Tunnel health discovery failed: ${tunnelControlDiagnostic(status)}`);
+      const parsed = JSON.parse(status.output);
+      baseUrl = [parsed?.local?.effective_health?.base_url, parsed?.local?.health?.base_url,
+        parsed?.health_url, parsed?.ui_url].map(loopbackHealthBaseURL).find(Boolean);
     }
+    if (!baseUrl) throw new Error("Local tunnel inventory returned no verified loopback endpoint");
     this.tunnelHealthBaseUrl = baseUrl;
     return baseUrl;
   }

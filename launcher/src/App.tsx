@@ -1,3 +1,4 @@
+import { StartupSurface } from "./StartupSurface";
 import { AnimatePresence, motion } from "motion/react";
 import {
   useCallback,
@@ -347,7 +348,7 @@ function LauncherShell({
   const firstRunZeroRiskSetup = snapshot.state.browserInteractionMode === "manual"
     && snapshot.state.coreSetupComplete !== true;
   const [surface, setSurface] = useState<Surface>(
-    firstRunZeroRiskSetup ? "mcp" : interactionSetupComplete ? "browser" : "setup",
+    snapshot.profile !== "development" && snapshot.state.routingDisabled ? "startup" : firstRunZeroRiskSetup ? "mcp" : interactionSetupComplete ? "browser" : "setup",
   );
   const devProfile = snapshot.profile === "development";
   const compactAtMount = useRef(window.matchMedia(COMPACT_SIDEBAR_QUERY).matches).current;
@@ -611,6 +612,7 @@ function LauncherShell({
                     navigateSurface("mcp");
                   }}
                 />
+                <SidebarItem active={surface === "startup"} icon="settings" label="启动配置" onClick={() => navigateSurface("startup")} />
               </SidebarGroup>
               <SidebarGroup label={copy.runtime}>
                 <SidebarItem active={surface === "activity"} icon="activity" label={copy.activity} onClick={() => navigateSurface("activity")} />
@@ -692,11 +694,15 @@ function LauncherShell({
                 updateState={updateState}
               />
             ) : null}
+            {surface === "startup" ? (
+              <StartupSurface operation={operation} logs={logs} disabled={devProfile} onConfigure={() => navigateSurface("setup")} />
+            ) : null}
             {surface === "activity" ? (
               <ActivitySurface copy={copy} language={language} logs={logs} setError={setError} />
             ) : null}
             {surface === "settings" ? (
               <SettingsSurface
+                showStartup={() => navigateSurface("startup")}
                 configureInteractionMode={(mode) => {
                   setMcpTargetMode(mode);
                   setSurface("mcp");
@@ -1208,7 +1214,7 @@ function SetupSurface({
       <SectionHeading label="MCP" meta={manualInteraction ? copy.required : copy.optional} spaced />
       <button
         className="next-surface-row"
-        disabled={!manualInteraction && !snapshot.state.codexCatalogVerified}
+        disabled={!manualInteraction && (!snapshot.state.coreSetupComplete || snapshot.state.routingDisabled)}
         onClick={showMcp}
         type="button"
       >
@@ -1245,6 +1251,7 @@ function McpSurface({
   snapshot: LauncherSnapshot;
   updateState: (state: LauncherState) => void;
 }) {
+  const routingConfigured = snapshot.state.coreSetupComplete === true && !snapshot.state.routingDisabled;
   const configuringInactiveMode = interactionMode !== snapshot.state.browserInteractionMode;
   const [step, setStep] = useState(
     configuringInactiveMode ? 1 : Math.min(2, Math.max(0, snapshot.state.mcpGuideStep || 0)),
@@ -1337,7 +1344,7 @@ function McpSurface({
       subtitle={devProfile ? copy.devMcpSubtitle : copy.mcpSubtitle}
       title={devProfile ? copy.devMcpTitle : "MCP"}
     >
-      {!manualInteraction && !configuringInactiveMode && !snapshot.state.codexCatalogVerified ? (
+      {!manualInteraction && !configuringInactiveMode && !routingConfigured ? (
         <NoticeRow icon="setup" tone="warning">{copy.mcpCatalogRequired}</NoticeRow>
       ) : null}
 
@@ -1452,7 +1459,7 @@ function McpSurface({
             ) : null}
             {step === 1 ? (
               <p className="mcp-step-two-hint">
-                {manualInteraction || configuringInactiveMode || snapshot.state.codexCatalogVerified
+                {manualInteraction || configuringInactiveMode || routingConfigured
                   ? copy.mcpStepTwoHint
                   : copy.mcpCatalogRequired}
               </p>
@@ -1499,7 +1506,7 @@ function McpSurface({
           <PrimaryButton
             disabled={
               busy
-              || (!manualInteraction && !configuringInactiveMode && !snapshot.state.codexCatalogVerified)
+              || (!manualInteraction && !configuringInactiveMode && !routingConfigured)
               || ((!credentialsConfigured || replacingCredentials) && (!tunnelId || !runtimeKey))
             }
             onClick={() => void install()}
@@ -1576,6 +1583,7 @@ function ActivitySurface({
 }
 
 function SettingsSurface({
+  showStartup,
   configureInteractionMode,
   copy,
   devProfile,
@@ -1584,6 +1592,7 @@ function SettingsSurface({
   snapshot,
   updateState,
 }: {
+  showStartup: () => void;
   configureInteractionMode: (mode: BrowserInteractionMode) => void;
   copy: Copy;
   devProfile: boolean;
@@ -1668,25 +1677,11 @@ function SettingsSurface({
 
   return (
     <ContentSurface narrow title={devProfile ? copy.devSettingsTitle : copy.settingsTitle}>
+      {!devProfile ? <SettingRow label="路由启动配置" body="本页设置应用偏好。代理、Tunnel 和 Codex 路由由「启动配置」统一启停；停止路由不会退出应用。">
+        <SecondaryButton onClick={showStartup}>打开启动配置</SecondaryButton>
+      </SettingRow> : null}
       <SectionHeading label={copy.general} />
       <div className="settings-list">
-        {!devProfile ? <SettingRow
-          label={snapshot.state.language === "zh-CN" ? "Codex Web GPT 总控开关" : "Codex Web GPT routing"}
-          body={snapshot.state.language === "zh-CN"
-            ? "开启时验证代理和 Tunnel；关闭时恢复开启前配置，保留 Codex App 和当前会话。"
-            : "Verify the proxy and tunnel on enable. Restore the previous configuration on disable; keep Codex App open."}
-        >
-          <Switch checked={!snapshot.state.routingDisabled} disabled={busy}
-            onChange={enabled => {
-              setBusy(true);
-              void api!.setRouting(enabled)
-                .then(() => api!.snapshot())
-                .then(next => updateState(next.state))
-                .catch(cause => setError(messageOf(cause)))
-                .finally(() => setBusy(false));
-            }} />
-        </SettingRow> : null}
-
         {!devProfile ? <SettingRow body={copy.launchAtLoginBody} flushAfter label={copy.launchAtLogin}>
           <Switch
             checked={snapshot.state.autoStart}

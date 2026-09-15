@@ -27,6 +27,7 @@ class RoutingSwitch {
       enabled: this.store.read().routingDisabled !== true,
       busy: this.inFlight !== null,
       runtimeReady: runtime?.status === 'ready',
+      runtimeStatus: runtime?.status || 'stopped',
       last: this.last,
     };
   }

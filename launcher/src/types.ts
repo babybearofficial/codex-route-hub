@@ -1,7 +1,7 @@
 export type Language = "en" | "zh-CN" | "ja";
 export type LauncherProfile = "production" | "development";
 export type BrowserInteractionMode = "automatic" | "manual";
-export type Surface = "browser" | "setup" | "mcp" | "activity" | "settings";
+export type Surface = "browser" | "setup" | "mcp" | "activity" | "settings" | "startup";
 
 export interface LauncherState {
   version: 1;
@@ -125,6 +125,7 @@ export interface RoutingStatus {
   enabled: boolean;
   busy: boolean;
   runtimeReady: boolean;
+  runtimeStatus?: string;
   last: { ok: boolean; status: string; message?: string } | null;
 }
 

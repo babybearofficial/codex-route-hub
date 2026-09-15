@@ -2703,3 +2703,17 @@ code {
     transition-duration: 0.01ms !important;
   }
 }
+
+.startup-content { max-width: 1100px; }
+.routing-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 24px 0; }
+.routing-cards article { border: 1px solid var(--color-border, #555); border-radius: 12px; padding: 20px; min-width: 0; }
+.routing-cards h2, .startup-surface > h2 { font-size: 16px; margin: 0 0 14px; }
+.routing-cards strong { overflow-wrap: anywhere; }
+.routing-cards p, .routing-note { font-size: 13px; opacity: .75; }
+.routing-actions { display: grid; gap: 12px; }
+.routing-actions button { width: 100%; min-height: 48px; }
+.routing-refresh { display: flex; align-items: center; gap: 24px; margin: 24px 0 12px; }
+.routing-refresh label { display: flex; align-items: center; gap: 8px; }
+.routing-error { color: #ef827c; overflow-wrap: anywhere; }
+.routing-log { height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; border: 1px solid var(--color-border, #555); border-radius: 12px; font-size: 12px; }
+@media (max-width: 720px) { .routing-cards { grid-template-columns: 1fr; } }

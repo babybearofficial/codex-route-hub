@@ -700,6 +700,7 @@ function registerIpc({ logger, stateStore }) {
       );
     }
     const result = IS_DEV_PROFILE ? await runtimeHost.setupDevCore() : await runtimeHost.setupCore();
+    if (!IS_DEV_PROFILE) await routingSwitch.setEnabled(true);
     stateStore.update({
       coreSetupComplete: true,
       codexCatalogVerified: IS_DEV_PROFILE ? true : false,
@@ -742,6 +743,7 @@ function registerIpc({ logger, stateStore }) {
     const result = interactionModeChange
       ? await browserHost.withInteractionModeChange(interactionMode, runSetup)
       : await runSetup();
+    if (!IS_DEV_PROFILE) await routingSwitch.setEnabled(true);
     const state = stateStore.update({
       browserInteractionMode: interactionMode,
       ...(interactionMode === "manual" ? { experimentalBiggerContext: false } : {}),

@@ -183,12 +183,13 @@ test("Zero Risk setup commits state after the runtime transaction and preserves 
 
 });
 
-test("MCP connection remains unavailable until the model catalog is verified", () => {
+test("MCP verification requires an enabled installed route, not a Codex restart", () => {
+  assert.match(appSource, /const routingConfigured = snapshot\.state\.coreSetupComplete === true && !snapshot\.state\.routingDisabled/);
   assert.match(
     appSource,
-    /manualInteraction \|\| configuringInactiveMode \|\| snapshot\.state\.codexCatalogVerified[\s\S]*?copy\.mcpStepTwoHint[\s\S]*?copy\.mcpCatalogRequired/,
+    /manualInteraction \|\| configuringInactiveMode \|\| routingConfigured[\s\S]*?copy\.mcpStepTwoHint[\s\S]*?copy\.mcpCatalogRequired/,
   );
-  assert.match(appSource, /!manualInteraction && !configuringInactiveMode && !snapshot\.state\.codexCatalogVerified/);
+  assert.match(appSource, /!manualInteraction && !configuringInactiveMode && !routingConfigured/);
 });
 
 test("MCP navigation remains locked while an operation is active", () => {
