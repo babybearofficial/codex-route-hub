@@ -295,6 +295,8 @@ async function setupCommand(args: string[]): Promise<void> {
   if (chrome) options.chromeExecutablePath = chrome;
   if (browserHostDescriptorPath) options.browserHostDescriptorPath = browserHostDescriptorPath;
   options.refreshAccountCapabilities = takeFlag(args, "--refresh-account-capabilities");
+  options.reuseLauncherAccountCapabilities = takeFlag(args, "--reuse-launcher-account-capabilities");
+  if (options.reuseLauncherAccountCapabilities) authorizeLauncherControl("account capability reuse");
   if (tunnelId) options.tunnelId = tunnelId;
   if (runtimeKeyFile) options.runtimeKeyFile = runtimeKeyFile;
   options.forceLogin = takeFlag(args, "--login");

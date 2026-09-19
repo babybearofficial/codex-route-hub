@@ -332,7 +332,7 @@ test("saved ChatGPT authentication is refreshed before setup is presented", () =
   assert.match(electronMain, /routingSwitch.startup\(\)/);
   const routingSource = fs.readFileSync(path.join(launcherRoot, "electron", "routing-switch.cjs"), "utf8");
   const refreshBarrier = routingSource.indexOf("await this.ready()");
-  const upgrade = routingSource.indexOf("await this.host.upgradeManagedRuntime()", refreshBarrier);
+  const upgrade = routingSource.indexOf("await this.host.upgradeManagedRuntime({", refreshBarrier);
   const runtimeStart = routingSource.indexOf("await this.supervisor.startIfConfigured()", upgrade);
   const routeConnect = routingSource.indexOf("await this.host.connectBridgeRoute()", runtimeStart);
   assert.ok(refreshBarrier >= 0);

@@ -175,6 +175,27 @@ test("passkey capture cannot be invoked outside the live Launcher control channe
   }
 });
 
+test("the internal capability-reuse switch requires live launcher authorization", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-capability-reuse-"));
+  try {
+    const result = await runCli([
+      "setup",
+      "--browser-only",
+      "--automatic-browser-interaction",
+      "--reuse-launcher-account-capabilities",
+      "--acknowledge-unofficial",
+    ], {
+      ...process.env,
+      CODEX_HOME: join(root, "codex"),
+      CODEX_CHATGPT_WEB_HOME: join(root, "app"),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("requires a live launcher authorization");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("DEV chat list works without starting launcher, broker, or Responses services", async () => {
   const root = mkdtempSync(join(tmpdir(), "codex-chatgpt-web-cli-dev-list-"));
   try {

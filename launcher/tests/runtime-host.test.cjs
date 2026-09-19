@@ -396,6 +396,33 @@ test("launcher update transaction upgrades its owned full runtime with saved con
   });
 });
 
+test("explicit route upgrade reuses the launcher capability snapshot under private authorization", async () => {
+  const fixture = hostFor({
+    mode: "full",
+    browserHost: "launcher",
+    appName: "Codex Native2",
+    browserInteractionMode: "automatic",
+    releaseVersion: "1.1.1",
+    solAvailable: true,
+    proAvailable: true,
+  });
+  let invocation;
+  fixture.host.launcherControlEnvironment = () => ({ CODEX_WEB_GPT_LAUNCHER_CONTROL_TOKEN: "private-token" });
+  fixture.host.runSetup = async (name, args, options = {}) => {
+    invocation = { name, args, options };
+    return { code: 0, stdout: "", stderr: "" };
+  };
+
+  const result = await fixture.host.upgradeManagedRuntime({ reuseAccountCapabilities: true });
+
+  assert.equal(result.updated, true);
+  assert.equal(invocation.args.includes("--reuse-launcher-account-capabilities"), true);
+  assert.equal(invocation.args.includes("--refresh-account-capabilities"), false);
+  assert.deepEqual(invocation.options.env, {
+    CODEX_WEB_GPT_LAUNCHER_CONTROL_TOKEN: "private-token",
+  });
+});
+
 test("launcher migrates the legacy connector identity even when the release version is unchanged", async () => {
   const fixture = hostFor({
     mode: "full",

@@ -1158,7 +1158,7 @@ class RuntimeHost {
     return { ...result, mode: current.mode, enabled: enabled === true };
   }
 
-  async upgradeManagedRuntime() {
+  async upgradeManagedRuntime({ reuseAccountCapabilities = false } = {}) {
     this.assertProductionProfile("Managed Codex runtime upgrade");
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
     const existing = this.runtimeConfigSnapshot();
@@ -1189,6 +1189,8 @@ class RuntimeHost {
         && !tunnelProfileMigrationRequired)) {
       return { updated: false };
     }
+    const reuseLauncherAccountCapabilities = interactionMode === "automatic"
+      && reuseAccountCapabilities === true;
     const args = [
       "setup",
       existing.mode === "full" ? "--full" : "--browser-only",
@@ -1196,7 +1198,11 @@ class RuntimeHost {
       this.browserDescriptorPath,
       // A release may repair capability detection. Reusing the previous result can
       // keep eligible models disabled even after the corrected probe is installed.
-      ...this.browserInteractionArgs({ mode: interactionMode, refreshCapabilities: true }),
+      ...this.browserInteractionArgs({
+        mode: interactionMode,
+        refreshCapabilities: !reuseLauncherAccountCapabilities,
+      }),
+      ...(reuseLauncherAccountCapabilities ? ["--reuse-launcher-account-capabilities"] : []),
       "--acknowledge-unofficial",
       "--restart-service",
     ];
@@ -1208,6 +1214,7 @@ class RuntimeHost {
         ? `${interactionMode === "manual" ? "Zero Risk" : "Automatic"} MCP profile migrated`
         : `Launcher runtime upgraded to ${currentVersion}`,
       timeoutMs: existing.mode === "full" ? MCP_SETUP_TIMEOUT_MS : CORE_SETUP_TIMEOUT_MS,
+      ...(reuseLauncherAccountCapabilities ? { env: this.launcherControlEnvironment() } : {}),
     });
     return {
       updated: true,

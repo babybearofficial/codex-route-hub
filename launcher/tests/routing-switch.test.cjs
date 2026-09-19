@@ -21,7 +21,7 @@ function world({ client = false, codexRunning = true } = {}) {
   const baseline = `model="original"\n${ORIGINAL_LINE}\n`;
   fs.writeFileSync(config, baseline);
   const journal = path.join(coreHome, 'codex/integration-journal.json');
-  const state = { routingDisabled: false }; const calls = []; const operations = [];
+  const state = { routingDisabled: false }; const calls = []; const operations = []; const upgrades = [];
   let ready = false; let healthy = true; let clock = 1_000_000;
   const health = { service: 'codex-chatgpt-web', status: 'ok', pid: 4242, successful_model_catalog_requests: 0, last_successful_model_catalog_request_at: null };
   const writeJournal = active => fs.writeFileSync(journal, JSON.stringify({ version: 10, active, configPath: config, installed: { openai_base_url: INSTALLED } }));
@@ -34,7 +34,7 @@ function world({ client = false, codexRunning = true } = {}) {
   const host = {
     coreHome, codexHome, currentOperation: () => null,
     runtimeConfigSnapshot: () => ({ configured: true, config: { mode: 'full' } }),
-    upgradeManagedRuntime: async () => calls.push('upgrade'),
+    upgradeManagedRuntime: async options => { calls.push('upgrade'); upgrades.push(options); },
     bridgeStatus: async () => ({ installed: fs.existsSync(journal), active: journalActive() }),
     setupCore: async () => { calls.push('setup'); writeJournal(false); },
     connectBridgeRoute: async () => {
@@ -81,7 +81,7 @@ function world({ client = false, codexRunning = true } = {}) {
     onClientRestarted: baseline => restarted.push(baseline),
     logger: { info() {}, warn() {}, error() {} },
     now: () => clock, pause: async ms => { clock += ms; }, resumeSettleMs: 5 });
-  return { control, host, supervisor, codex, state, calls, operations, restarted, config, journal, baseline, health,
+  return { control, host, supervisor, codex, state, calls, operations, restarted, upgrades, config, journal, baseline, health,
     routeActive: () => new RegExp(`^${ROUTE_LINE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm').test(fs.readFileSync(config, 'utf8')),
     isReady: () => ready, setReady: value => { ready = value; }, setHealthy: value => { healthy = value; },
     advance: ms => { clock += ms; }, writeJournal, setRoute,
@@ -195,6 +195,7 @@ test('configured explicit start skips blocking login preflight and still reopens
   try {
     await w.control.setEnabled(true);
     assert.ok(!w.calls.includes('auth'));
+    assert.deepEqual(w.upgrades, [{ reuseAccountCapabilities: true }]);
     assert.ok(w.calls.indexOf('quit-client') < w.calls.indexOf('start'));
     assert.ok(w.calls.indexOf('connect') < w.calls.indexOf('open-client'));
     assert.equal(w.control.last.clientRestarted, true);

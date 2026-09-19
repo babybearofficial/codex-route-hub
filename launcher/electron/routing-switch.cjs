@@ -392,7 +392,12 @@ class RoutingSwitch {
       untouched = false;
       if (prepare) await prepare();
       this.restoreCheckpoint();
-      const upgrade = await this.host.upgradeManagedRuntime();
+      const upgrade = await this.host.upgradeManagedRuntime({
+        // The explicit route action already owns the post-connect browser doctor. A
+        // version-only migration must not strand the stopped Codex client merely because
+        // the existing ChatGPT page is temporarily signed out or behind a challenge.
+        reuseAccountCapabilities: !startup && !prepare,
+      });
       const route = await this.host.bridgeStatus();
       if (!route.installed) await this.host.setupCore();
       const runtime = await this.supervisor.startIfConfigured();

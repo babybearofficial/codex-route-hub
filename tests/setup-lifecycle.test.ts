@@ -56,6 +56,56 @@ test("launcher setup refreshes account capabilities only when missing or explici
   } as never, false, "automatic")).toBe(true);
 });
 
+test("launcher-authorized release migration preserves legacy capabilities without inspecting ChatGPT", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-web-launcher-capability-reuse-"));
+  const existing = {
+    ...configModule.defaultConfig("browser-only"),
+    releaseVersion: "5.0.6",
+    browserHost: "launcher" as const,
+    browserInteractionMode: "automatic" as const,
+    browserHostDescriptorPath: join(root, "launcher-browser.json"),
+    solAvailable: true,
+    proAvailable: true,
+  };
+  delete existing.extraHighAvailable;
+  let saved: configModule.AppConfig | undefined;
+  writeFileSync(join(root, "config.json"), "{}\n");
+  const listener = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
+  existing.port = listener.port!;
+  await listener.stop(true);
+  const mocks = [
+    spyOn(configModule, "getConfigPath").mockReturnValue(join(root, "config.json")),
+    spyOn(configModule, "loadConfigForSetup").mockReturnValue(existing),
+    spyOn(configModule, "saveConfig").mockImplementation(value => { saved = value; }),
+    spyOn(integration, "readCodexSubagentProtocol").mockReturnValue(existing.subagentProtocol),
+    spyOn(integration, "preflightCodexIntegration").mockImplementation(() => {}),
+    spyOn(integration, "installCodexIntegration").mockImplementation(() => ({} as never)),
+    spyOn(service, "getServiceStatus").mockReturnValue({ installed: false, loaded: false } as never),
+    spyOn(service, "removeLegacyRuntimeArtifacts").mockImplementation(() => {}),
+    spyOn(tunnelService, "getTunnelServiceStatus").mockReturnValue({ installed: false, loaded: false } as never),
+    spyOn(browserHost, "inspectLauncherBrowserHost").mockImplementation(() => {
+      throw new Error("release migration must not inspect ChatGPT");
+    }),
+  ];
+  try {
+    await setup({
+      mode: "browser-only",
+      browserInteractionMode: "automatic",
+      browserHostDescriptorPath: existing.browserHostDescriptorPath,
+      reuseLauncherAccountCapabilities: true,
+      acknowledgedUnofficial: true,
+    });
+    expect(saved).toMatchObject({
+      solAvailable: true,
+      extraHighAvailable: false,
+      proAvailable: true,
+    });
+  } finally {
+    for (const mock of mocks.reverse()) mock.mockRestore();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 for (const development of [false, true]) for (const interaction of ["manual", "automatic"] as const) {
   test(`${development ? "DEV" : "production"} ${interaction} setup commits the tunnel inputs before its supervisor starts the runtime`, async () => {
     const root = mkdtempSync(join(tmpdir(), "codex-web-setup-owner-"));

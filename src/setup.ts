@@ -50,6 +50,8 @@ export interface SetupOptions {
   chromeExecutablePath?: string;
   browserHostDescriptorPath?: string;
   refreshAccountCapabilities?: boolean;
+  /** Launcher-authorized release migration that preserves the last verified capability snapshot. */
+  reuseLauncherAccountCapabilities?: boolean;
   forceLogin?: boolean;
   autoApproveToolCalls?: boolean;
   experimentalBiggerContext?: boolean;
@@ -430,6 +432,21 @@ function prepareSetup(options: SetupOptions): PreparedSetup {
       ?? readCodexSubagentProtocol(existing?.subagentProtocol ?? "compatibility-v1"),
   });
   delete config.purpose;
+  if (options.reuseLauncherAccountCapabilities) {
+    if (options.refreshAccountCapabilities) {
+      throw new Error("Launcher capability reuse cannot be combined with an account capability refresh");
+    }
+    if (!existing
+      || existing.mode !== config.mode
+      || existing.browserHost !== "launcher"
+      || config.browserHost !== "launcher"
+      || existing.browserInteractionMode !== "automatic"
+      || config.browserInteractionMode !== "automatic") {
+      throw new Error(
+        "Launcher capability reuse is available only for an unchanged launcher-owned Automatic runtime",
+      );
+    }
+  }
   const launcherOwned = config.browserHost === "launcher";
   if (!launcherOwned && process.platform !== "darwin") {
     throw new Error(
@@ -510,12 +527,21 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
     // authenticated surface, but setup must not inspect its model selector or infer availability.
   } else if (config.browserHost === "launcher") {
     if (options.forceLogin) throw new Error("Launcher browser login is owned by the launcher UI; --login cannot replace it");
-    const capabilities = await inspectLauncherCapabilities(
-      config,
-      existing,
-      options.refreshAccountCapabilities === true,
-      "production",
-    );
+    const capabilities = options.reuseLauncherAccountCapabilities
+      ? {
+          solAvailable: existing!.solAvailable,
+          // Released 5.0.6 configurations may omit this newer field. Its established
+          // compatibility meaning is false, so a version-only migration can persist it
+          // without opening ChatGPT solely to rediscover the same account snapshot.
+          extraHighAvailable: existing!.extraHighAvailable === true,
+          proAvailable: existing!.proAvailable,
+        }
+      : await inspectLauncherCapabilities(
+          config,
+          existing,
+          options.refreshAccountCapabilities === true,
+          "production",
+        );
     solAvailable = capabilities.solAvailable;
     extraHighAvailable = capabilities.extraHighAvailable;
     proAvailable = capabilities.proAvailable;
