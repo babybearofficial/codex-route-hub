@@ -321,6 +321,63 @@ test("the idle home browser performs one bounded reload for a Cloudflare challen
   assert.equal(fixture.cloudflareChallengeRecoveryArmed, true);
 });
 
+test("session inspection may recover its owned surface after a Cloudflare challenge", async () => {
+  const calls = [];
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    turnTabs: new Map(),
+    manualOperation: "session inspection",
+    cloudflareChallengeRecovery: null,
+    cloudflareChallengeRecoveryArmed: true,
+    cloudflareChallengeRecoveryDelayMs: 0,
+    cloudflareChallengeRecoverySettleMs: 0,
+    view: {
+      webContents: {
+        id: 43,
+        getURL: () => "https://chatgpt.com/?temporary-chat=true",
+        isDestroyed: () => false,
+        loadURL: async url => calls.push(["loadURL", url]),
+      },
+    },
+    logger: {
+      info: (event) => calls.push(["info", event]),
+      warn: (event) => calls.push(["warn", event]),
+      error: (event) => calls.push(["error", event]),
+    },
+    setState: () => {},
+    probeAuthentication: async () => calls.push(["probeAuthentication"]),
+  });
+  assert.equal(BrowserHost.prototype.handleChatGptBackendResponse.call(fixture, {
+    statusCode: 403,
+    url: "https://chatgpt.com/backend-api/subscriptions",
+    webContentsId: 43,
+    responseHeaders: { "cf-mitigated": ["challenge"] },
+  }), true);
+  await fixture.cloudflareChallengeRecovery;
+  assert.deepEqual(calls.filter(([name]) => name === "loadURL"), [
+    ["loadURL", "https://chatgpt.com/?temporary-chat=true"],
+  ]);
+  assert.ok(!calls.some(([name, event]) => name === "warn" && event === "browser.cloudflare_challenge_not_reloaded"));
+});
+
+test("user-facing browser operations still keep their surface stable during a challenge", () => {
+  const calls = [];
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    turnTabs: new Map(),
+    manualOperation: "connector verification",
+    cloudflareChallengeRecovery: null,
+    cloudflareChallengeRecoveryArmed: true,
+    view: { webContents: { id: 44, isDestroyed: () => false } },
+    logger: { warn: (event) => calls.push(event) },
+  });
+  assert.equal(BrowserHost.prototype.handleChatGptBackendResponse.call(fixture, {
+    statusCode: 403,
+    url: "https://chatgpt.com/backend-api/subscriptions",
+    webContentsId: 44,
+    responseHeaders: { "cf-mitigated": ["challenge"] },
+  }), true);
+  assert.deepEqual(calls, ["browser.cloudflare_challenge_not_reloaded"]);
+});
+
 function createContents() {
   const calls = [];
   let zoomFactor = 1;
@@ -430,6 +487,25 @@ test("session inspection delegates navigation and capability detection to the sh
   assert.equal(calls[1].operation, "inspect");
   assert.equal(calls[1].appName, "Codex Native2");
   assert.deepEqual(calls[1].payload, { detectCapabilities: true });
+});
+
+test("a failed browser challenge refreshes the stale surface before regular inspection", async () => {
+  const calls = [];
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    helper: { executable: "/runtime/electron", script: "/runtime/browser-helper.cjs" },
+    descriptorPath: "/runtime/launcher-browser.json",
+    getConnectorName: () => "Codex Native2",
+    logger: { info() {} },
+    state: { status: "error" },
+    view: { webContents: { getURL: () => "https://chatgpt.com/?temporary-chat=true" } },
+    refreshChatGptHomeDocument: async () => calls.push("refresh"),
+    runBrowserHelperOperation: async () => ({
+      type: "result",
+      value: { authenticated: true, temporary: true, url: "https://chatgpt.com/?temporary-chat=true" },
+    }),
+  });
+  await BrowserHost.prototype.runSessionInspection.call(fixture, false);
+  assert.deepEqual(calls, ["refresh"]);
 });
 
 test("session inspection fails closed on incomplete shared-helper capability evidence", async () => {

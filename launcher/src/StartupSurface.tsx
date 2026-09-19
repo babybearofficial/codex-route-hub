@@ -32,6 +32,8 @@ export function describeRouting(status: RoutingStatus | null): { runtime: string
   const routeDetail = status.enabled
     ? status.routeActive === false
       ? "Codex 配置未指向本地代理。点击“启动路由并重启 Codex”重新建立。"
+      : status.last?.status === "degraded"
+        ? "本地路由和代理已生效；ChatGPT 会话校验暂时不可用，应用会继续维持运行时并自动重试。"
       : status.last?.status === "failed"
         ? "最近一次操作失败，请查看日志；路由保持生效时应用会自动恢复运行时。"
         : status.last?.status === "ready" || status.last?.status === "synced" || status.last?.status === "restarted"

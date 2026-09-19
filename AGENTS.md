@@ -6,5 +6,6 @@
 - Off restores the configuration from immediately before activation, not factory defaults. Preserve unrelated settings and keep recovery journals on conflicts.
 - Verify runtime ownership, browser auth and tunnel readiness separately from remote connector binding.
 - Bound pending operations, buffers, logs, timers, listeners and child process lifetimes. Test repeated enable/disable and failure paths.
+- Continuity repair contract: while routing remains enabled, preserve a working Responses/model-catalog daemon during Tunnel discovery failures. Prefer the generated profile's verified loopback health URL publication to remote status discovery; unknown diagnostics do not authorize stopping a ready alias. Keep retries and monitors alive, and preserve explicit user stop intent. Record source verification separately from installed-app and sleep/wake acceptance.
 - Do not log, commit, or publish credentials, browser descriptors, runtime configuration, account data or captured private logs.
 - Origin is the user's fork; upstream is miuuyy/codex-chatgpt-web. Work on codex/* branches.

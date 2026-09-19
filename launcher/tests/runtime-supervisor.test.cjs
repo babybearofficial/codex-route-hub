@@ -2104,3 +2104,110 @@ test("ready inventory without live admin uses bounded status fallback", async ()
     assert.deepEqual(calls[1], { args: ["runtimes", "status", "owned", "--json"], timeout: 20_000 });
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+function continuitySupervisor(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'runtime-continuity-'));
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => '0.2.0', isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} }, sourceRoot: root,
+    coreHome: root, browserDescriptorPath: path.join(root, 'launcher.json'),
+  });
+  t.after(() => {
+    supervisor.stopDaemonMonitor(); supervisor.stopTunnelMonitor();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  return supervisor;
+}
+
+test('tunnel failure preserves the catalog daemon across repeated keeper starts', async t => {
+  const s = continuitySupervisor(t);
+  const config = { mode: 'full', releaseVersion: '0.2.0' };
+  s.readConfig = () => config;
+  s.proxyHealth = async () => false;
+  const daemon = { pid: process.pid, exitCode: null, signalCode: null };
+  let starts = 0;
+  s.startDaemon = async () => { starts++; s.daemon = daemon; };
+  s.startTunnel = async () => { throw new Error('health discovery timeout'); };
+  s.cleanupFailedStart = async () => assert.fail('must not drain working catalog service');
+  for (let i = 0; i < 3; i++) {
+    await assert.rejects(s.startIfConfigured(), /health discovery timeout/);
+    assert.equal(s.daemon, daemon);
+    assert.ok(s.daemonMonitorTimer);
+    assert.equal(s.stopping, false);
+  }
+  s.startTunnel = async () => { s.tunnel = { pid: process.pid }; };
+  assert.equal((await s.startIfConfigured()).status, 'ready');
+  assert.equal(starts, 4);
+});
+
+test('unknown diagnostics retain a ready alias and later rediscover locally', async t => {
+  const s = continuitySupervisor(t);
+  const config = { mode: 'full', tunnel: { alias: 'owned' } };
+  s.assertTunnelClientReady = () => {};
+  s.waitForKnownTunnelStatus = async () => ({ ready: true, pid: process.pid });
+  s.discoverTunnelHealthBaseUrl = async () => { throw new Error('status timed out'); };
+  s.runTunnelStopCommand = async () => assert.fail('unknown health must not stop alias');
+  s.runTunnelConnectCommand = async () => assert.fail('unknown health must not reconnect alias');
+  await assert.rejects(s.startTunnel(config), /status timed out/);
+  assert.equal(s.tunnel.pid, process.pid);
+  assert.ok(s.tunnelMonitorTimer);
+  s.readLocalTunnelHealth = async () => ({ statusKnown: Boolean(s.tunnelHealthBaseUrl), ready: Boolean(s.tunnelHealthBaseUrl) });
+  s.readTunnelHealth = async () => ({ statusKnown: true, ready: true });
+  s.discoverTunnelHealthBaseUrl = async () => { s.tunnelHealthBaseUrl = 'http://127.0.0.1:12345'; };
+  assert.equal((await s.observeTunnelForMonitor(config)).ready, true);
+});
+
+test('same owned tunnel reuses its endpoint during keeper recovery', async t => {
+  const s = continuitySupervisor(t);
+  s.assertTunnelClientReady = () => {};
+  s.tunnel = { pid: process.pid };
+  s.tunnelHealthBaseUrl = 'http://127.0.0.1:12345';
+  s.waitForKnownTunnelStatus = async () => ({ ready: true, pid: process.pid });
+  s.discoverTunnelHealthBaseUrl = async () => assert.fail('must retain known endpoint');
+  s.probeTunnelMcpTransport = async () => ({ observed: true, ok: true });
+  await s.startTunnel({ mode: 'full' });
+  assert.ok(s.tunnelMonitorTimer);
+});
+
+test('local URL publication avoids remote status discovery and verifies the endpoint', async t => {
+  const s = continuitySupervisor(t);
+  const health = await localHealthServer();
+  t.after(() => health.close());
+  const urlFile = path.join(s.coreHome, 'health.url');
+  fs.writeFileSync(urlFile, health.baseUrl);
+  fs.writeFileSync(path.join(s.coreHome, 'owned.yaml'), JSON.stringify({ health: { url_file: urlFile } }));
+  const calls = [];
+  s.runTunnelCommand = async (_config, args) => {
+    calls.push(args[1]);
+    assert.equal(args[1], 'cleanup', 'remote status must not be needed');
+    return { code: 0, output: JSON.stringify({ entries: [{ alias: 'owned', runtime_state: 'ready', live_runtime: { found: false } }] }) };
+  };
+  assert.equal(await s.discoverTunnelHealthBaseUrl({ tunnel: { alias: 'owned', profileName: 'owned', profileDir: s.coreHome } }), health.baseUrl);
+  assert.deepEqual(calls, ['cleanup']);
+});
+
+test('unhealthy local URL publication falls back instead of claiming readiness', async t => {
+  const s = continuitySupervisor(t);
+  const health = await localHealthServer(() => 503);
+  t.after(() => health.close());
+  const urlFile = path.join(s.coreHome, 'health.url');
+  fs.writeFileSync(urlFile, health.baseUrl);
+  fs.writeFileSync(path.join(s.coreHome, 'owned.yaml'), JSON.stringify({ health: { url_file: urlFile } }));
+  s.runTunnelCommand = async (_config, args) => {
+    if (args[1] === 'status') throw new Error('remote unavailable');
+    return { code: 0, output: JSON.stringify({ entries: [{ alias: 'owned', runtime_state: 'ready' }] }) };
+  };
+  await assert.rejects(s.discoverTunnelHealthBaseUrl({ tunnel: { alias: 'owned', profileName: 'owned', profileDir: s.coreHome } }), /remote unavailable/);
+  assert.equal(s.tunnelHealthBaseUrl, null);
+});
+
+test('an unavailable inventory never authorizes stopping an owned alias', async t => {
+  const s = continuitySupervisor(t);
+  s.assertTunnelClientReady = () => {};
+  s.tunnel = { pid: process.pid };
+  s.waitForKnownTunnelStatus = async () => { throw new Error('inventory timeout'); };
+  s.runTunnelStopCommand = async () => assert.fail('no stop without failure evidence');
+  await assert.rejects(s.startTunnel({ mode: 'full' }), /inventory timeout/);
+  assert.equal(s.tunnel.pid, process.pid);
+  assert.ok(s.tunnelMonitorTimer);
+});

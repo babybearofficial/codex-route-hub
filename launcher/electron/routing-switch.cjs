@@ -27,6 +27,12 @@ const digest = file => createHash('sha256').update(fs.readFileSync(file)).digest
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const message = error => redactText(error instanceof Error ? error.message : String(error));
 
+function browserOnlyDoctorFailure(report) {
+  if (report?.ok !== false || !Array.isArray(report.checks)) return false;
+  const failures = report.checks.filter(check => check?.status === 'error');
+  return failures.length > 0 && failures.every(check => check?.id === 'browser-host');
+}
+
 class RoutingSwitch {
   constructor({ host, supervisor, store, publishState, publishOperation, ready = async () => {}, preflight = async () => {},
     client = null, logger = null, onClientRestarted = null, refreshSession = null, now = Date.now, pause = sleep,
@@ -137,6 +143,10 @@ class RoutingSwitch {
   // A catalog request newer than the baseline proves the running Codex reads models through
   // the proxy, which is the only end-to-end evidence that the Web models are visible.
   verifyCatalog(observed) {
+    if (!observed?.proxyHealthy || observed.routeActive !== true) {
+      if (this.store.read().codexCatalogVerified === true) this.update({ codexCatalogVerified: false });
+      return false;
+    }
     if (!observed || observed.catalogRequests === null) return false;
     const { requests, atMs } = this.catalogBaseline;
     const evidence = observed.catalogRequests > requests
@@ -384,7 +394,27 @@ class RoutingSwitch {
       if (runtime.status !== 'ready') throw new Error(runtime.detail || `Runtime is ${runtime.status}`);
       const connected = await this.host.connectBridgeRoute();
       const report = await this.host.doctor();
-      if (!report.ok) throw new Error(report.checks.filter(c => c.status === 'error').map(c => c.message).join('; ') || 'Runtime verification failed');
+      let degradedDoctor = false;
+      if (!report.ok) {
+        // The browser session is an external readiness signal. Once the local Responses proxy,
+        // Tunnel and route are already healthy, a transient Cloudflare/session inspection error
+        // must not tear down the service that Codex now depends on. The keeper keeps supervising
+        // the local runtime while the next explicit inspection can re-prove the browser session.
+        degradedDoctor = browserOnlyDoctorFailure(report)
+          && runtime.status === 'ready'
+          && connected?.active !== false
+          && this.routeActive() === true;
+        if (degradedDoctor) {
+          this.logger?.warn?.('routing.doctor_degraded', {
+            checks: report.checks.filter(check => check?.status === 'error').map(check => ({
+              id: check.id,
+              message: message(check.message || 'browser verification failed'),
+            })),
+          });
+        } else {
+          throw new Error(report.checks.filter(c => c.status === 'error').map(c => c.message).join('; ') || 'Runtime verification failed');
+        }
+      }
       const config = this.host.runtimeConfigSnapshot().config;
       const routeChanged = connected.changed === true || upgrade?.updated === true;
       this.update({ coreSetupComplete: true, mcpRuntimeInstalled: config?.mode === 'full',
@@ -397,7 +427,8 @@ class RoutingSwitch {
       const observed = await this.observe();
       this.verifyCatalog(observed);
       this.startKeeper();
-      this.last = { ok: true, status: 'ready', clientRestarted: clientStopped,
+      this.last = { ok: true, status: degradedDoctor ? 'degraded' : 'ready', clientRestarted: clientStopped,
+        ...(degradedDoctor ? { message: 'Routing is active; browser session verification is temporarily unavailable. The local runtime will remain supervised.' } : {}),
         ...(clientSkipped ? { message: `路由已生效；Codex 未重启（${clientSkipped}），请稍后手动重启或点击同步模型` } : {}),
         checks: report.checks.map(({ id, status, message: text }) => ({ id, status, message: text })) };
       this.publishOperation?.({ name: 'routing', status: 'completed', message: 'Web GPT routing is ready' });

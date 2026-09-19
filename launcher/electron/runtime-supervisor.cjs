@@ -798,10 +798,30 @@ class RuntimeSupervisor {
     const entry = inventory.entries?.find(item => item?.alias === tunnel.alias);
     let baseUrl = entry?.live_runtime?.found === true
       ? loopbackHealthBaseURL(entry.live_runtime.base_url) : null;
+    if (!baseUrl && entry && ["ready", "healthy", "starting"].includes(entry.runtime_state)) {
+      // The generated native profile is JSON stored as .yaml. Its URL file is the
+      // runtime's local endpoint publication; status also reads it, but then waits
+      // for the remote control plane. Never accept the file alone as readiness.
+      try {
+        const profile = readJson(path.join(tunnel.profileDir, `${tunnel.profileName}.yaml`));
+        const urlFile = profile?.health?.url_file;
+        if (typeof urlFile === "string" && path.isAbsolute(urlFile)) {
+          const candidate = loopbackHealthBaseURL(fs.readFileSync(urlFile, "utf8").trim());
+          if (candidate) {
+            this.tunnelHealthBaseUrl = candidate;
+            const health = await this.probeTunnelEndpoint("/healthz");
+            if (health.observed && health.ok) baseUrl = candidate;
+            else this.tunnelHealthBaseUrl = null;
+          }
+        }
+      } catch {
+        this.tunnelHealthBaseUrl = null;
+      }
+    }
     if (!baseUrl) {
       // v0.0.12 can report ready with live_runtime.found=false. In that case
-      // only status exposes the effective local health URL. Its optional remote
-      // lookup exceeds five seconds on real networks; keep a bounded 20s fallback.
+      // status can expose the effective local health URL when publication is absent.
+      // Its optional remote lookup is bounded and cannot authorize teardown.
       const status = await this.runTunnelCommand(config,
         ["runtimes", "status", tunnel.alias, "--json"], 20_000, "Tunnel health URL discovery");
       if (status.code !== 0) throw new Error(`Tunnel health discovery failed: ${tunnelControlDiagnostic(status)}`);
@@ -815,7 +835,13 @@ class RuntimeSupervisor {
   }
 
   async waitForTunnelMcpTransport(config, timeoutMs = 10_000) {
-    if (!this.tunnelHealthBaseUrl) await this.discoverTunnelHealthBaseUrl(config);
+    if (!this.tunnelHealthBaseUrl) {
+      try { await this.discoverTunnelHealthBaseUrl(config); }
+      catch (error) {
+        error.code = "TUNNEL_OBSERVATION_UNAVAILABLE";
+        throw error;
+      }
+    }
     const deadline = Date.now() + timeoutMs;
     let health;
     do {
@@ -827,10 +853,12 @@ class RuntimeSupervisor {
       if (Date.now() >= deadline) break;
       await sleep(TUNNEL_HEALTH_POLL_INTERVAL_MS);
     } while (Date.now() < deadline);
-    throw new Error(
+    const error = new Error(
       `Tunnel MCP transport could not be verified within ${timeoutMs}ms:`
       + ` ${health?.detail || "no diagnostics returned"}`,
     );
+    if (!health?.observed) error.code = "TUNNEL_OBSERVATION_UNAVAILABLE";
+    throw error;
   }
 
   async readLocalTunnelHealth() {
@@ -890,6 +918,9 @@ class RuntimeSupervisor {
       const previousEndpoint = this.tunnelHealthBaseUrl;
       const inventory = await this.readTunnelHealth(config);
       if (tunnelRuntimeStopped(inventory)) return inventory;
+      if (!this.tunnelHealthBaseUrl && inventory.ready) {
+        await this.discoverTunnelHealthBaseUrl(config);
+      }
       if (this.tunnelHealthBaseUrl && this.tunnelHealthBaseUrl !== previousEndpoint) {
         return await this.readLocalTunnelHealth();
       }
@@ -975,21 +1006,31 @@ class RuntimeSupervisor {
     if (config.mode !== "full") return;
     this.assertTunnelClientReady(config);
     // Every acquisition binds diagnostics to this runtime, including adoption of an existing alias.
-    this.tunnelHealthBaseUrl = null;
+    const previousPid = this.tunnel?.pid;
+    let preserveUnobservedRuntime = false;
+    let cleanupAllowed = false;
     try {
       const existing = await this.waitForKnownTunnelStatus(config);
       if (existing.ready && !forceRestart) {
+        cleanupAllowed = true;
+        if (previousPid !== existing.pid) this.tunnelHealthBaseUrl = null;
         this.tunnel = {
           pid: existing.pid,
           exitCode: null,
           signalCode: null,
           managed: true,
         };
-        await this.waitForTunnelMcpTransport(config);
+        try {
+          await this.waitForTunnelMcpTransport(config);
+        } catch (error) {
+          preserveUnobservedRuntime = error.code === "TUNNEL_OBSERVATION_UNAVAILABLE";
+          throw error;
+        }
         this.startTunnelMonitor(config);
         this.logger.info("runtime.tunnel_adopted", { pid: existing.pid });
         return;
       }
+      cleanupAllowed = true;
       this.tunnel = null;
       const stopped = await this.runTunnelStopCommand(config);
       if (stopped.code !== 0
@@ -1008,9 +1049,20 @@ class RuntimeSupervisor {
       }
       await this.waitForTunnel(config, TUNNEL_START_TIMEOUT_MS, operationName);
       if (!this.tunnel) throw new Error("Tunnel runtime became ready without a managed process identity");
-      await this.waitForTunnelMcpTransport(config);
+      try {
+        await this.waitForTunnelMcpTransport(config);
+      } catch (error) {
+        preserveUnobservedRuntime = error.code === "TUNNEL_OBSERVATION_UNAVAILABLE";
+        throw error;
+      }
       this.startTunnelMonitor(config);
     } catch (error) {
+      if (preserveUnobservedRuntime || !cleanupAllowed) {
+        // Local inventory still owns a ready alias. A remote discovery timeout is not
+        // evidence that it stopped; retain it and keep probing without disconnecting users.
+        if (this.tunnel) this.startTunnelMonitor(config);
+        throw error;
+      }
       let cleanupError;
       try {
         this.stopTunnelMonitor();
@@ -1330,8 +1382,9 @@ class RuntimeSupervisor {
       message: tunnelOnly ? "Starting isolated DEV MCP runtime" : "Starting local runtime",
     });
     try {
-      await this.startTunnel(config, "runtime-start");
       if (!tunnelOnly) await this.startDaemon(config);
+      if (!tunnelOnly) this.startDaemonMonitor(config);
+      await this.startTunnel(config, "runtime-start");
       this.restartHistory.daemon = [];
       this.restartHistory.tunnel = [];
       this.writeState("ready");
@@ -1343,19 +1396,11 @@ class RuntimeSupervisor {
       });
       return { status: "ready", daemonPid: this.daemon?.pid, tunnelPid: this.tunnel?.pid };
     } catch (error) {
-      this.stopping = true;
-      let cleanupError;
-      try {
-        await this.cleanupFailedStart(config);
-      } catch (caught) {
-        cleanupError = caught;
-      } finally {
-        this.stopping = false;
-      }
-      const primary = errorMessage(error);
-      const message = cleanupError
-        ? appendFailure(primary, "runtime startup cleanup failed", cleanupError)
-        : primary;
+      // Each component cleans up its own unsuccessful acquisition. Never tear down
+      // the working Responses/catalog listener because the independent tunnel failed.
+      // In particular, draining a live daemon here used to stop it as soon as turns ended.
+      if (this.daemon && !tunnelOnly) this.startDaemonMonitor(config);
+      const message = errorMessage(error);
       this.tryWriteState("failed", message);
       this.publishOperation?.({ name: "runtime-start", status: "failed", message });
       throw new Error(message);
@@ -1402,7 +1447,7 @@ class RuntimeSupervisor {
     this.publishOperation?.({ name: "runtime-recovery", status: "running", message: `Restarting ${name}` });
     const tunnelOnly = this.launcherProfile === "development";
     if (name === "tunnel") {
-      await this.startTunnel(config, "runtime-recovery", { forceRestart: true });
+      await this.startTunnel(config, "runtime-recovery", { forceRestart: !this.tunnel });
     }
     else if (tunnelOnly) throw new Error("DEV runtime cannot recover a Responses daemon");
     else await this.startDaemon(config);

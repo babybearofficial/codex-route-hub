@@ -116,6 +116,29 @@ test('failed doctor rolls back and preserves the explicit off intent', async () 
   } finally { w.cleanup(); }
 });
 
+test('a browser-only doctor failure keeps a healthy route and runtime supervised', async () => {
+  const w = world({ client: true });
+  try {
+    w.host.doctor = async () => ({
+      ok: false,
+      checks: [
+        { id: 'browser-host', status: 'error', message: 'Embedded launcher browser is unavailable' },
+        { id: 'proxy', status: 'ok', message: 'Responses proxy is healthy' },
+        { id: 'tunnel-runtime', status: 'ok', message: 'Tunnel runtime reports healthy and ready' },
+      ],
+    });
+    const result = await w.control.setEnabled(true);
+    assert.equal(result.last.ok, true);
+    assert.equal(result.last.status, 'degraded');
+    assert.equal(w.state.routingDisabled, false);
+    assert.equal(w.routeActive(), true);
+    assert.equal(w.isReady(), true);
+    assert.ok(!w.calls.includes('restore'), 'a healthy local route must not be rolled back');
+    assert.equal(w.codex.running, true, 'Codex is reopened on the still-active route');
+    assert.notEqual(w.control.keeperTimer, null);
+  } finally { w.cleanup(); }
+});
+
 test('off intent survives startup and changed baseline is not overwritten', async () => {
   const w = world();
   try {
@@ -592,5 +615,19 @@ test('sync without a client controller recovers the runtime and asks for a manua
     assert.equal(result.last.status, 'restart-required');
     assert.equal(w.isReady(), true);
     assert.equal(w.state.codexRestartRequired, true);
+  } finally { w.cleanup(); }
+});
+
+test('catalog verification is cleared when the listener or route is lost', () => {
+  const w = world();
+  try {
+    const observed = { proxyHealthy: true, routeActive: true, catalogRequests: 1, lastCatalogAtMs: 1 };
+    assert.equal(w.control.verifyCatalog(observed), true);
+    assert.equal(w.state.codexCatalogVerified, true);
+    assert.equal(w.control.verifyCatalog({ ...observed, proxyHealthy: false }), false);
+    assert.equal(w.state.codexCatalogVerified, false);
+    assert.equal(w.control.verifyCatalog(observed), true);
+    assert.equal(w.control.verifyCatalog({ ...observed, routeActive: false }), false);
+    assert.equal(w.state.codexCatalogVerified, false);
   } finally { w.cleanup(); }
 });

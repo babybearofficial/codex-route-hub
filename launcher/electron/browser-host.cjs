@@ -63,6 +63,11 @@ const AUTH_PROVIDER_HOSTS = new Set([
 ]);
 const CLOUDFLARE_CHALLENGE_RECOVERY_DELAY_MS = 500;
 const CLOUDFLARE_CHALLENGE_RECOVERY_SETTLE_MS = 1_000;
+// Session inspection and refresh are read-only maintenance operations. They may recover the
+// page that is being inspected when Cloudflare blocks a backend request. User-facing operations
+// (login, connector verification, smoke and logout) keep their surface stable and therefore
+// continue to suppress a navigation while they own it.
+const CLOUDFLARE_RECOVERY_ALLOWED_OPERATIONS = new Set(["session inspection", "session refresh"]);
 const COMPOSER_SELECTOR = [
   '[data-testid="prompt-textarea"]',
   "#prompt-textarea",
@@ -362,6 +367,7 @@ class BrowserHost {
     this.loginOperation = null;
     this.sessionRefreshOperation = null;
     this.cloudflareChallengeRecovery = null;
+    this.cloudflareChallengeRecoveryError = null;
     this.cloudflareChallengeRecoveryArmed = true;
     this.cloudflareChallengeRecoveryDelayMs = CLOUDFLARE_CHALLENGE_RECOVERY_DELAY_MS;
     this.cloudflareChallengeRecoverySettleMs = CLOUDFLARE_CHALLENGE_RECOVERY_SETTLE_MS;
@@ -1185,6 +1191,7 @@ class BrowserHost {
 
     if (details.statusCode >= 200 && details.statusCode < 400) {
       this.cloudflareChallengeRecoveryArmed = true;
+      this.cloudflareChallengeRecoveryError = null;
       return false;
     }
     if (!isChatGptCloudflareChallengeResponse(details)) return false;
@@ -1192,9 +1199,15 @@ class BrowserHost {
       this.cloudflareChallengeRecoveryArmed = false;
       return true;
     }
-    if (this.activeTraceId || this.manualOperation) {
+    const operation = this.manualOperation;
+    const recoveryBlocked = this.activeTraceId
+      ? "turn-active"
+      : operation && !CLOUDFLARE_RECOVERY_ALLOWED_OPERATIONS.has(operation)
+        ? "manual-operation-active"
+        : null;
+    if (recoveryBlocked) {
       this.logger.warn("browser.cloudflare_challenge_not_reloaded", {
-        reason: this.activeTraceId ? "turn-active" : "manual-operation-active",
+        reason: recoveryBlocked,
         url: details.url,
       });
       return true;
@@ -1204,11 +1217,13 @@ class BrowserHost {
       return true;
     }
     this.cloudflareChallengeRecoveryArmed = false;
+    this.cloudflareChallengeRecoveryError = null;
     this.logger.warn("browser.cloudflare_challenge_detected", { url: details.url });
     const recovery = this.reloadHomeAfterCloudflareChallenge();
     const tracked = recovery
       .catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
+        this.cloudflareChallengeRecoveryError = error instanceof Error ? error : new Error(message);
         this.logger.error("browser.cloudflare_challenge_recovery_failed", { message });
         this.setState({ status: "error", message, loading: false });
       })
@@ -2796,7 +2811,26 @@ class BrowserHost {
     if (this.manualOperation === INTERACTION_MODE_CHANGE_OPERATION) {
       return await this.runSessionInspection(detectCapabilities);
     }
-    return await this.withManualOperation("session inspection", () => this.runSessionInspection(detectCapabilities));
+    return await this.withManualOperation("session inspection", async () => {
+      // A previous backend challenge may still be recovering from setup. Waiting here prevents
+      // the helper from competing with that reload and turns the real security-check error into
+      // a bounded doctor result instead of an outer control-request timeout.
+      await this.waitForCloudflareChallengeRecovery();
+      return await this.runSessionInspection(detectCapabilities);
+    });
+  }
+
+  async waitForCloudflareChallengeRecovery() {
+    for (;;) {
+      if (this.cloudflareChallengeRecoveryError) {
+        const error = this.cloudflareChallengeRecoveryError;
+        this.cloudflareChallengeRecoveryError = null;
+        throw error;
+      }
+      const recovery = this.cloudflareChallengeRecovery;
+      if (!recovery) return;
+      await recovery;
+    }
   }
 
   async runSessionInspection(detectCapabilities = false) {
@@ -2804,7 +2838,11 @@ class BrowserHost {
     const connectorName = this.connectorName();
     const initialUrl = this.view.webContents.getURL();
     const startedIdle = initialUrl === IDLE_BROWSER_URL;
-    if (detectCapabilities) await this.refreshChatGptHomeDocument();
+    // A failed challenge leaves the primary surface in error. Refresh it before the next
+    // non-capability inspection as well; otherwise the helper would wait on the stale challenged
+    // document until the outer control request timed out.
+    if (detectCapabilities || this.state?.status === "error") await this.refreshChatGptHomeDocument();
+    await this.waitForCloudflareChallengeRecovery();
     const result = await this.runBrowserHelperOperation({
       helper: this.helper,
       descriptorPath: this.descriptorPath,
@@ -2813,6 +2851,7 @@ class BrowserHost {
       payload: { detectCapabilities },
       logger: this.logger,
     });
+    await this.waitForCloudflareChallengeRecovery();
     const inspected = result?.value;
     if (!inspected || inspected.authenticated !== true || inspected.temporary !== true || typeof inspected.url !== "string") {
       throw new Error("Browser helper returned invalid ChatGPT session evidence");
