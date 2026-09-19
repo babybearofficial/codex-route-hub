@@ -60,7 +60,7 @@ function launcherConfig(descriptorPath, overrides = {}) {
       ? "\\\\.\\pipe\\codex-chatgpt-web-runtime-supervisor-test"
       : path.join(root, "turn-broker.sock"),
     headed: true,
-    proAvailable: true,
+    extraHighAvailable: true, proAvailable: true,
     autoApproveToolCalls: false,
     controlToken: "runtime-supervisor-control-token-0123456789abcdef",
     runtimeCommand: [process.execPath],
@@ -250,7 +250,7 @@ test("launcher runtime validation accepts native Windows paths and a named pipe"
     brokerSocketPath: "\\\\.\\pipe\\codex-chatgpt-web-runtime-supervisor-test",
     headed: true,
     solAvailable: true,
-    proAvailable: true,
+    extraHighAvailable: true, proAvailable: true,
     autoApproveToolCalls: false,
     controlToken: "runtime-supervisor-control-token-0123456789abcdef",
     runtimeCommand: ["C:\\Users\\Example\\.codex-chatgpt-web\\runtime\\bun.exe"],
@@ -782,8 +782,10 @@ test("launcher adopts a healthy native managed tunnel without spawning a foregro
     connects += 1;
     return { code: 0, output: "{}" };
   };
+  const healthFile = path.join(root, "health.url");
+  fs.writeFileSync(healthFile, health.baseUrl);
   supervisor.runTunnelCommand = async () => ({ code: 0,
-    output: JSON.stringify({ entries: [{ alias: "codex-chatgpt-web", live_runtime: { found: true, base_url: health.baseUrl } }] }) });
+    output: JSON.stringify({ aliases: [{ alias: "codex-chatgpt-web", health_url_file: healthFile }] }) });
   supervisor.startTunnelMonitor = () => { monitors += 1; };
   try {
     await supervisor.startTunnel({
@@ -801,6 +803,66 @@ test("launcher adopts a healthy native managed tunnel without spawning a foregro
     assert.equal(supervisor.tunnel?.pid, process.pid);
     assert.equal(supervisor.tunnel?.managed, true);
     assert.equal(supervisor.tunnelHealthBaseUrl, health.baseUrl, "adoption cannot inherit a stale endpoint");
+    assert.equal((await supervisor.readLocalTunnelHealth()).ready, true);
+  } finally {
+    await health.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("first launcher tunnel startup creates its missing profile and keeps the verified runtime alive", {
+  skip: process.platform === "win32", // Executable manager fixture uses a Unix shebang.
+}, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-first-tunnel-"));
+  const health = await localHealthServer(() => 200, pathname => pathname.startsWith("/api/logs")
+    ? JSON.stringify({ events: [] }) : "ok");
+  const profileDir = path.join(root, "profiles");
+  const profile = path.join(profileDir, "first-setup.yaml");
+  const binaryPath = path.join(root, "tunnel-client");
+  const runtimeKeyFile = path.join(root, "runtime.key");
+  const eventPath = path.join(root, "commands.jsonl");
+  fs.writeFileSync(binaryPath, `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+const profile = ${JSON.stringify(profile)};
+fs.appendFileSync(${JSON.stringify(eventPath)}, JSON.stringify(args) + "\\n");
+if (args[1] === "connect") {
+  fs.writeFileSync(profile, "native manager profile fixture");
+  console.log("{}");
+} else if (args[1] === "stop") {
+  if (fs.existsSync(profile)) {
+    console.error("refusing a stop after successful startup");
+    process.exitCode = 1;
+  } else {
+    console.error("runtime alias not found");
+    process.exitCode = 1;
+  }
+} else if (args[1] === "cleanup") {
+  console.log(JSON.stringify({ entries: fs.existsSync(profile) ? [{
+    alias: "first-setup", runtime_state: "ready",
+    live_runtime: { base_url: ${JSON.stringify(health.baseUrl)}, system: { pid: ${process.pid} } }
+  }] : [] }));
+} else process.exitCode = 2;
+`, { mode: 0o700 });
+  fs.writeFileSync(runtimeKeyFile, "fixture");
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "0.2.0", isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root, coreHome: root, browserDescriptorPath: path.join(root, "launcher.json"),
+  });
+  let monitored = false;
+  const config = { mode: "full", brokerSocketPath: path.join(root, "broker.sock"), tunnel: {
+    binaryPath, runtimeKeyFile, profileDir, profileName: "first-setup", alias: "first-setup",
+    tunnelId: `tunnel_${"a".repeat(32)}`,
+  } };
+  supervisor.startTunnelMonitor = () => { monitored = true; };
+  try {
+    await supervisor.startTunnel(config);
+    const commands = fs.readFileSync(eventPath, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    assert.deepEqual(commands.map(args => args[1]), ["cleanup", "stop", "connect", "cleanup"]);
+    assert.equal(monitored, true);
+    assert.equal(fs.existsSync(profile), true);
+    assert.equal(supervisor.tunnel?.pid, process.pid);
     assert.equal((await supervisor.readLocalTunnelHealth()).ready, true);
   } finally {
     await health.close();
@@ -827,8 +889,10 @@ for (const existingReady of [true, false]) {
     supervisor.assertTunnelClientReady = () => {};
     supervisor.readTunnelHealth = async () => ({ ready: connected, statusKnown: true,
       state: connected ? "ready" : "stopped", processRunning: connected, pid: null });
+    const healthFile = path.join(root, "health.url");
+    fs.writeFileSync(healthFile, health.baseUrl);
     supervisor.runTunnelCommand = async () => ({ code: 0,
-      output: JSON.stringify({ entries: [{ alias: "owned-test", live_runtime: { found: true, base_url: health.baseUrl } }] }) });
+      output: JSON.stringify({ aliases: [{ alias: "owned-test", health_url_file: healthFile }] }) });
     supervisor.runTunnelConnectCommand = async () => { connected = true; return { code: 0 }; };
     supervisor.runTunnelStopCommand = async () => { connected = false; return { code: 0 }; };
     supervisor.waitForTunnelStopped = async () => { assert.equal(connected, false); };
@@ -931,12 +995,14 @@ test("fresh tunnel recovery discovers its official loopback diagnostics before p
     },
   };
   const commands = [];
+  const healthFile = path.join(root, "health.url");
+  fs.writeFileSync(healthFile, "http://127.0.0.1:43127\n");
   supervisor.runTunnelCommand = async (_config, args) => {
     commands.push(args);
     return {
       code: 0,
       output: JSON.stringify({
-        entries: [{ alias: "codex-chatgpt-web", live_runtime: { found: true, base_url: "http://127.0.0.1:43127" } }],
+        aliases: [{ alias: "codex-chatgpt-web", health_url_file: healthFile }],
       }),
     };
   };
@@ -946,10 +1012,15 @@ test("fresh tunnel recovery discovers its official loopback diagnostics before p
     fatal: false,
     detail: "MCP transport has no recent internal failures",
   });
+  supervisor.probeTunnelEndpoint = async pathname => ({
+    observed: true,
+    ok: pathname === "/healthz",
+    detail: `${pathname} returned HTTP 200`,
+  });
   try {
     await supervisor.waitForTunnelMcpTransport(config, 25);
     assert.equal(supervisor.tunnelHealthBaseUrl, "http://127.0.0.1:43127");
-    assert.deepEqual(commands, [["runtimes", "cleanup", "--json"]]);
+    assert.deepEqual(commands, [["runtimes", "list", "--json"]]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -964,9 +1035,11 @@ test("tunnel diagnostics discovery rejects a non-loopback endpoint", async () =>
     coreHome: root,
     browserDescriptorPath: path.join(root, "launcher.json"),
   });
+  const healthFile = path.join(root, "health.url");
+  fs.writeFileSync(healthFile, "https://example.com/healthz\n");
   supervisor.runTunnelCommand = async () => ({
     code: 0,
-    output: JSON.stringify({ entries: [{ alias: "codex-chatgpt-web", live_runtime: { found: true, base_url: "https://example.com/healthz" } }] }),
+    output: JSON.stringify({ aliases: [{ alias: "codex-chatgpt-web", health_url_file: healthFile }] }),
   });
   try {
     await assert.rejects(
@@ -1464,7 +1537,8 @@ test("explicit launcher shutdown cancels active turns before the graceful stop",
   assert.deepEqual(actions, ["cancel-turns", "graceful-stop"]);
 });
 
-test("launcher supervisor requests exact browser trace cancellation", async () => {
+for (const reason of [undefined, "browser_surface_bootstrap_timeout", "helper_heartbeat_expired"])
+test(`launcher supervisor forwards exact trace cancellation: ${reason ?? "user close"}`, async () => {
   const supervisor = new RuntimeSupervisor({
     app: { getVersion: () => "0.2.0", isPackaged: false },
     logger: { info() {}, warn() {}, error() {} },
@@ -1476,7 +1550,7 @@ test("launcher supervisor requests exact browser trace cancellation", async () =
   supervisor.daemon = { exitCode: null, signalCode: null };
   supervisor.control = async (_config, action, options) => {
     assert.equal(action, "cancel-turn");
-    assert.deepEqual(options.body, { traceId: "trace_exact" });
+    assert.deepEqual(options.body, { traceId: "trace_exact", ...(reason ? { reason } : {}) });
     assert.equal(options.timeoutMs, 15_000);
     return {
       status: "ok",
@@ -1486,7 +1560,7 @@ test("launcher supervisor requests exact browser trace cancellation", async () =
     };
   };
 
-  const result = await supervisor.cancelBrowserTurn("trace_exact");
+  const result = await supervisor.cancelBrowserTurn("trace_exact", reason);
   assert.equal(result.trace_id, "trace_exact");
 });
 
@@ -2095,8 +2169,8 @@ test("ready inventory without live admin uses bounded status fallback", async ()
   const calls = [];
   supervisor.runTunnelCommand = async (_config, args, timeout) => {
     calls.push({ args, timeout });
-    return { code: 0, output: JSON.stringify(args[1] === "cleanup"
-      ? { entries: [{ alias: "owned", runtime_state: "ready", live_runtime: { found: false } }] }
+    return { code: 0, output: JSON.stringify(args[1] === "list"
+      ? { aliases: [{ alias: "owned" }] }
       : { local: { effective_health: { base_url: "http://127.0.0.1:43127" } } }) };
   };
   try {
@@ -2179,11 +2253,11 @@ test('local URL publication avoids remote status discovery and verifies the endp
   const calls = [];
   s.runTunnelCommand = async (_config, args) => {
     calls.push(args[1]);
-    assert.equal(args[1], 'cleanup', 'remote status must not be needed');
-    return { code: 0, output: JSON.stringify({ entries: [{ alias: 'owned', runtime_state: 'ready', live_runtime: { found: false } }] }) };
+    assert.equal(args[1], 'list', 'remote status must not be needed');
+    return { code: 0, output: JSON.stringify({ aliases: [{ alias: 'owned', health_url_file: urlFile }] }) };
   };
   assert.equal(await s.discoverTunnelHealthBaseUrl({ tunnel: { alias: 'owned', profileName: 'owned', profileDir: s.coreHome } }), health.baseUrl);
-  assert.deepEqual(calls, ['cleanup']);
+  assert.deepEqual(calls, ['list']);
 });
 
 test('unhealthy local URL publication falls back instead of claiming readiness', async t => {
@@ -2195,7 +2269,7 @@ test('unhealthy local URL publication falls back instead of claiming readiness',
   fs.writeFileSync(path.join(s.coreHome, 'owned.yaml'), JSON.stringify({ health: { url_file: urlFile } }));
   s.runTunnelCommand = async (_config, args) => {
     if (args[1] === 'status') throw new Error('remote unavailable');
-    return { code: 0, output: JSON.stringify({ entries: [{ alias: 'owned', runtime_state: 'ready' }] }) };
+    return { code: 0, output: JSON.stringify({ aliases: [{ alias: 'owned', health_url_file: urlFile }] }) };
   };
   await assert.rejects(s.discoverTunnelHealthBaseUrl({ tunnel: { alias: 'owned', profileName: 'owned', profileDir: s.coreHome } }), /remote unavailable/);
   assert.equal(s.tunnelHealthBaseUrl, null);

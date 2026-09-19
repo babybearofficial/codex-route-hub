@@ -419,6 +419,7 @@ class RoutingSwitch {
       const routeChanged = connected.changed === true || upgrade?.updated === true;
       this.update({ coreSetupComplete: true, mcpRuntimeInstalled: config?.mode === 'full',
         experimentalBiggerContext: config?.experimentalBiggerContext === true,
+        experimentalSkillAttachments: config?.experimentalSkillAttachments === true,
         zeroRiskProEnabled: config?.zeroRiskProEnabled === true,
         ...(routeChanged && !clientStopped ? { codexRestartRequired: true, codexCatalogVerified: false } : {}),
         ...(config?.mode === 'browser-only' ? { mcpSetupComplete: false, mcpGuideStep: 0 } : {}),

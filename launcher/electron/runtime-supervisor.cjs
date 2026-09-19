@@ -253,6 +253,12 @@ function validateConfig(config, descriptorPath, platform = process.platform, lau
       throw new Error(`Runtime configuration has an invalid ${key}`);
     }
   }
+  if (config.extraHighAvailable !== undefined && typeof config.extraHighAvailable !== "boolean") {
+    throw new Error("Runtime configuration has an invalid extraHighAvailable");
+  }
+  if (config.extraHighAvailable === true && !config.solAvailable) {
+    throw new Error("Runtime configuration cannot enable Extra High without Sol");
+  }
   if (config.experimentalBiggerContext !== undefined
     && typeof config.experimentalBiggerContext !== "boolean") {
     throw new Error("Runtime configuration has an invalid experimentalBiggerContext");
@@ -564,6 +570,8 @@ class RuntimeSupervisor {
     if (!fs.existsSync(tunnel.runtimeKeyFile)) {
       throw new Error(`Tunnel runtime key is missing: ${tunnel.runtimeKeyFile}`);
     }
+    // First-time setup commits only configuration; all native manager commands run here.
+    fs.mkdirSync(tunnel.profileDir, { recursive: true, mode: 0o700 });
   }
 
   async proxyHealthPayload(config, timeoutMs = 2_000) {
@@ -789,47 +797,68 @@ class RuntimeSupervisor {
     const tunnel = config.tunnel;
     if (!tunnel) throw new Error("launcher-owned tunnel has no runtime configuration");
     this.tunnelHealthBaseUrl = null;
-    // The status command may query the control plane. Its latency must not be
-    // confused with failure of a healthy local tunnel (observed >5 seconds).
-    const result = await this.runTunnelCommand(config,
-      ["runtimes", "cleanup", "--json"], 5_000, "Local tunnel health discovery");
-    if (result.code !== 0) throw new Error(`Local tunnel inventory failed: ${tunnelControlDiagnostic(result)}`);
-    const inventory = JSON.parse(result.output);
-    const entry = inventory.entries?.find(item => item?.alias === tunnel.alias);
-    let baseUrl = entry?.live_runtime?.found === true
-      ? loopbackHealthBaseURL(entry.live_runtime.base_url) : null;
-    if (!baseUrl && entry && ["ready", "healthy", "starting"].includes(entry.runtime_state)) {
-      // The generated native profile is JSON stored as .yaml. Its URL file is the
-      // runtime's local endpoint publication; status also reads it, but then waits
-      // for the remote control plane. Never accept the file alone as readiness.
+    const result = await this.runTunnelCommand(
+      config,
+      ["runtimes", "list", "--json"],
+      5_000,
+      "Local tunnel health discovery",
+    );
+    if (result.code !== 0) {
+      throw new Error(`Local tunnel health discovery failed: ${tunnelControlDiagnostic(result)}`);
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(result.output);
+    } catch (error) {
+      throw new Error(`Local tunnel health discovery returned invalid JSON: ${errorMessage(error)}`);
+    }
+    // Unscoped `list` is local-only. Its exact alias record points to the live health URL file;
+    // `status` waits for an unrelated remote API before returning this same local information.
+    const aliases = Array.isArray(parsed?.aliases)
+      ? parsed.aliases.filter(entry => entry?.alias === tunnel.alias)
+      : [];
+    const healthFile = aliases.length === 1 ? aliases[0].health_url_file : undefined;
+    let baseUrl = null;
+    if (typeof healthFile === "string" && path.isAbsolute(healthFile)) {
       try {
-        const profile = readJson(path.join(tunnel.profileDir, `${tunnel.profileName}.yaml`));
-        const urlFile = profile?.health?.url_file;
-        if (typeof urlFile === "string" && path.isAbsolute(urlFile)) {
-          const candidate = loopbackHealthBaseURL(fs.readFileSync(urlFile, "utf8").trim());
-          if (candidate) {
-            this.tunnelHealthBaseUrl = candidate;
-            const health = await this.probeTunnelEndpoint("/healthz");
-            if (health.observed && health.ok) baseUrl = candidate;
-            else this.tunnelHealthBaseUrl = null;
-          }
+        const candidate = loopbackHealthBaseURL(await fs.promises.readFile(healthFile, "utf8"));
+        if (candidate) {
+          this.tunnelHealthBaseUrl = candidate;
+          const health = await this.probeTunnelEndpoint("/healthz");
+          if (health.observed && health.ok) baseUrl = candidate;
         }
       } catch {
-        this.tunnelHealthBaseUrl = null;
+        // Fall through to the bounded compatibility lookup below.
       }
+      if (!baseUrl) this.tunnelHealthBaseUrl = null;
     }
     if (!baseUrl) {
-      // v0.0.12 can report ready with live_runtime.found=false. In that case
-      // status can expose the effective local health URL when publication is absent.
-      // Its optional remote lookup is bounded and cannot authorize teardown.
-      const status = await this.runTunnelCommand(config,
-        ["runtimes", "status", tunnel.alias, "--json"], 20_000, "Tunnel health URL discovery");
-      if (status.code !== 0) throw new Error(`Tunnel health discovery failed: ${tunnelControlDiagnostic(status)}`);
-      const parsed = JSON.parse(status.output);
-      baseUrl = [parsed?.local?.effective_health?.base_url, parsed?.local?.health?.base_url,
-        parsed?.health_url, parsed?.ui_url].map(loopbackHealthBaseURL).find(Boolean);
+      // Older tunnel-client builds do not publish health_url_file in `runtimes list`.
+      // Their status command may query the control plane, so keep it bounded and use
+      // it only when the local-only publication is absent or unhealthy.
+      const status = await this.runTunnelCommand(
+        config,
+        ["runtimes", "status", tunnel.alias, "--json"],
+        20_000,
+        "Tunnel health URL discovery",
+      );
+      if (status.code !== 0) {
+        throw new Error(`Tunnel health discovery failed: ${tunnelControlDiagnostic(status)}`);
+      }
+      let statusPayload;
+      try {
+        statusPayload = JSON.parse(status.output);
+      } catch (error) {
+        throw new Error(`Tunnel health discovery returned invalid JSON: ${errorMessage(error)}`);
+      }
+      baseUrl = [
+        statusPayload?.local?.effective_health?.base_url,
+        statusPayload?.local?.health?.base_url,
+        statusPayload?.health_url,
+        statusPayload?.ui_url,
+      ].map(loopbackHealthBaseURL).find(Boolean);
     }
-    if (!baseUrl) throw new Error("Local tunnel inventory returned no verified loopback endpoint");
+    if (!baseUrl) throw new Error("Local tunnel health discovery returned no verified loopback endpoint");
     this.tunnelHealthBaseUrl = baseUrl;
     return baseUrl;
   }
@@ -1973,7 +2002,7 @@ class RuntimeSupervisor {
     };
   }
 
-  async cancelBrowserTurn(traceId) {
+  async cancelBrowserTurn(traceId, reason) {
     if (!/^[A-Za-z0-9_-]{6,128}$/.test(traceId || "")) throw new Error("Browser turn trace id is invalid");
     const config = this.readConfig();
     const daemon = this.daemon;
@@ -1981,7 +2010,7 @@ class RuntimeSupervisor {
       throw new Error("Launcher-owned runtime is unavailable for browser-turn cancellation");
     }
     const result = await this.control(config, "cancel-turn", {
-      body: { traceId },
+      body: { traceId, ...(reason === undefined ? {} : { reason }) },
       timeoutMs: 15_000,
     });
     if (result.status !== "ok"
