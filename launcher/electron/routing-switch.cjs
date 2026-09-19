@@ -368,7 +368,12 @@ class RoutingSwitch {
         this.last = { ok: false, status: 'not-configured' };
         return this.status();
       }
-      await this.preflight();
+      // Setup must prove the launcher-owned ChatGPT session before it changes runtime files.
+      // An explicit start of an already configured route is different: the post-connect doctor
+      // owns browser evidence, and a transient sign-in or Cloudflare timeout must not prevent the
+      // Codex client from reaching its stop/reopen lifecycle at all. Background startup keeps its
+      // bounded retry behavior, while every setup transaction remains fail-closed.
+      if (startup || prepare) await this.preflight();
       // An explicit start always restarts Codex so it re-reads the route and catalog. Startup
       // restarts it only when the route must actually change; a route that is already in
       // effect keeps the user's running Codex session untouched.

@@ -189,18 +189,32 @@ test('restore failure keeps the runtime serving the still-routed config and reta
   } finally { w.cleanup(); }
 });
 
-test('pipeline verifies authentication, quits client, establishes route then reopens client', async () => {
+test('configured explicit start skips blocking login preflight and still reopens the client', async () => {
   const w = world({ client: true });
   w.control.preflight = async () => w.calls.push('auth');
   try {
     await w.control.setEnabled(true);
-    assert.ok(w.calls.indexOf('auth') < w.calls.indexOf('quit-client'));
+    assert.ok(!w.calls.includes('auth'));
     assert.ok(w.calls.indexOf('quit-client') < w.calls.indexOf('start'));
     assert.ok(w.calls.indexOf('connect') < w.calls.indexOf('open-client'));
     assert.equal(w.control.last.clientRestarted, true);
     assert.equal(w.restarted.length, 1);
     assert.equal(w.state.codexCatalogVerified, false);
     assert.equal(w.state.codexRestartRequired, false);
+  } finally { w.cleanup(); }
+});
+
+test('setup verifies authentication before quitting the client or changing runtime files', async () => {
+  const w = world({ client: true });
+  w.control.preflight = async () => w.calls.push('auth');
+  try {
+    const result = await w.control.install(async () => {
+      w.calls.push('prepare');
+      return { mode: 'full' };
+    });
+    assert.deepEqual(result, { mode: 'full' });
+    assert.ok(w.calls.indexOf('auth') < w.calls.indexOf('quit-client'));
+    assert.ok(w.calls.indexOf('quit-client') < w.calls.indexOf('prepare'));
   } finally { w.cleanup(); }
 });
 
@@ -215,22 +229,21 @@ test('pipeline failure restores original route before reopening the previous cli
   } finally { w.cleanup(); }
 });
 
-test('authentication failure does not quit the client and changes nothing but the saved intent', async () => {
+test('setup authentication failure does not quit the client or change runtime files', async () => {
   const w = world({ client: true });
   try {
     w.state.routingDisabled = true;
     w.control.preflight = async () => { throw new Error('ERR_CONNECTION_CLOSED'); };
-    await assert.rejects(w.control.setEnabled(true), /ERR_CONNECTION_CLOSED/);
+    await assert.rejects(w.control.install(async () => {}), /ERR_CONNECTION_CLOSED/);
     assert.ok(!w.calls.includes('quit-client'));
     assert.ok(!w.calls.includes('stop') && !w.calls.includes('restore'));
     assert.equal(w.state.routingDisabled, true, 'the previous off intent is put back');
 
-    // Routing already in effect: a failed preflight during a refresh keeps it in effect.
-    w.control.preflight = async () => {};
+    // Routing already in effect: a failed setup preflight keeps it in effect.
     await w.control.setEnabled(true);
     const before = w.calls.length;
     w.control.preflight = async () => { throw new Error('ERR_CONNECTION_RESET'); };
-    await assert.rejects(w.control.setEnabled(true), /ERR_CONNECTION_RESET/);
+    await assert.rejects(w.control.install(async () => {}), /ERR_CONNECTION_RESET/);
     assert.deepEqual(w.calls.slice(before), []);
     assert.equal(w.state.routingDisabled, false);
     assert.equal(w.isReady(), true);
