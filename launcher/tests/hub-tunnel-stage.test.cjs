@@ -45,7 +45,9 @@ test("staging saves only this account's private key and leaves its route and cli
   const binding = store.binding("default", "automatic");
   assert.equal(binding.tunnelId, tunnelId);
   assert.equal(fs.readFileSync(binding.runtimeKeyFile, "utf8"), runtimeKey);
-  assert.equal(fs.statSync(binding.runtimeKeyFile).mode & 0o777, 0o600);
+  if (process.platform !== "win32") {
+    assert.equal(fs.statSync(binding.runtimeKeyFile).mode & 0o777, 0o600);
+  }
   assert.deepEqual(fs.readdirSync(path.join(ctx.profile.userData, "secrets")),
     ["account-default-automatic.key"]);
   assert.equal(clientActions(), 0);

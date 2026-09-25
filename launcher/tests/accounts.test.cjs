@@ -35,7 +35,9 @@ test("each ChatGPT account keeps a separate browser partition and Tunnel key", (
       mode: "full", automaticTunnel: { tunnelId, runtimeKeyFile: runtimeKey },
     }), /key does not match/);
     assert.equal(fs.readFileSync(bound.runtimeKeyFile, "utf8"), fs.readFileSync(sourceKey, "utf8"));
-    assert.equal(fs.statSync(bound.runtimeKeyFile).mode & 0o777, 0o600);
+    if (process.platform !== "win32") {
+      assert.equal(fs.statSync(bound.runtimeKeyFile).mode & 0o777, 0o600);
+    }
     assert.equal(store.binding(other.id), null);
     assert.equal(store.snapshot().profiles.find(profile => profile.id === other.id).tunnelConfigured, false);
     assert.doesNotMatch(JSON.stringify(store.snapshot()), /runtime-key|source\.key/);

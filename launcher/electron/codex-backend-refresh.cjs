@@ -6,7 +6,8 @@ const execute = promisify(execFile);
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function appServerPids(output, appPid, appPath) {
-  const executable = path.join(appPath, 'Contents', 'Resources', 'codex');
+  // This helper inspects a macOS app bundle even when its pure matcher is tested elsewhere.
+  const executable = path.posix.join(appPath, 'Contents', 'Resources', 'codex');
   return output.split(/\r?\n/).flatMap(line => {
     const match = /^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(line);
     if (!match || Number(match[2]) !== appPid
