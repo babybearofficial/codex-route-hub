@@ -8,9 +8,14 @@ function subscription(channel, listener) {
 
 contextBridge.exposeInMainWorld("codexWebLauncher", {
   routingStatus: () => ipcRenderer.invoke("launcher:routing-status"),
+  routingStatuses: () => ipcRenderer.invoke("launcher:routing-statuses"),
   setRouting: enabled => ipcRenderer.invoke("launcher:routing-set", enabled),
+  setRoutingBulk: (profileIds, enabled) => ipcRenderer.invoke("launcher:routing-batch-set", profileIds, enabled),
   syncRouting: () => ipcRenderer.invoke("launcher:routing-sync"),
   snapshot: () => ipcRenderer.invoke("launcher:snapshot"),
+  createAccount: () => ipcRenderer.invoke("launcher:account-create"),
+  selectAccount: profileId => ipcRenderer.invoke("launcher:account-select", profileId),
+  stageAccountTunnel: input => ipcRenderer.invoke("launcher:tunnel-stage", input),
   setLanguage: (language) => ipcRenderer.invoke("launcher:set-language", language),
   openSocial: (target) => ipcRenderer.invoke("launcher:open-social", target),
   completeOnboarding: (language, browserInteractionMode) => ipcRenderer.invoke(
@@ -56,6 +61,8 @@ contextBridge.exposeInMainWorld("codexWebLauncher", {
   windowControl: (action) => ipcRenderer.send("launcher:window-control", action),
   onWindowStateChanged: (listener) => subscription("launcher:window-state-changed", listener),
   onStateChanged: (listener) => subscription("launcher:state-changed", listener),
+  onAccountsChanged: (listener) => subscription("launcher:accounts-changed", listener),
+  onAccountContextChanged: (listener) => subscription("launcher:account-context-changed", listener),
   onBrowserState: (listener) => subscription("launcher:browser-state", listener),
   onOperation: (listener) => subscription("launcher:operation", listener),
   onLog: (listener) => subscription("launcher:log", listener),

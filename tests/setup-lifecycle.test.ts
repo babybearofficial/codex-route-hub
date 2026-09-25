@@ -156,6 +156,44 @@ for (const development of [false, true]) for (const interaction of ["manual", "a
   });
 }
 
+test("named launcher gets a unique Tunnel alias without touching the default global services", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-web-named-owner-"));
+  const key = join(root, "runtime.key");
+  writeFileSync(key, "fixture-runtime-key");
+  const previousName = process.env.CODEX_ROUTE_HUB_INSTANCE;
+  process.env.CODEX_ROUTE_HUB_INSTANCE = "work";
+  let saved: configModule.AppConfig | undefined;
+  const mocks = [
+    spyOn(configModule, "getConfigPath").mockReturnValue(join(root, "config.json")),
+    spyOn(configModule, "saveConfig").mockImplementation(value => { saved = value; }),
+    spyOn(integration, "preflightCodexIntegration").mockImplementation(() => {}),
+    spyOn(integration, "installCodexIntegration").mockImplementation(() => ({} as never)),
+    spyOn(service, "getServiceStatus").mockImplementation(() => { throw new Error("global daemon service inspected"); }),
+    spyOn(service, "removeLegacyRuntimeArtifacts").mockImplementation(() => {}),
+    spyOn(tunnelService, "getTunnelServiceStatus").mockImplementation(() => { throw new Error("global Tunnel service inspected"); }),
+    spyOn(tunnel, "managedRuntimeKeyPath").mockReturnValue(key),
+    spyOn(tunnel, "installTunnelClient").mockResolvedValue(join(root, "tunnel-client")),
+    spyOn(browserHost, "inspectLauncherBrowserHost").mockResolvedValue({
+      solAvailable: true, proAvailable: true, extraHighAvailable: false,
+    } as never),
+  ];
+  try {
+    const listener = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
+    const port = listener.port!;
+    await listener.stop(true);
+    await setup({ mode: "full", browserInteractionMode: "automatic",
+      browserHostDescriptorPath: join(root, "launcher-browser.json"),
+      tunnelId: `tunnel_${"c".repeat(32)}`, port, acknowledgedUnofficial: true });
+    expect(saved?.tunnel?.alias).toBe("codex-chatgpt-web-work");
+    expect(saved?.tunnel?.profileName).toBe("codex-chatgpt-web-work");
+  } finally {
+    for (const mock of mocks.reverse()) mock.mockRestore();
+    if (previousName === undefined) delete process.env.CODEX_ROUTE_HUB_INSTANCE;
+    else process.env.CODEX_ROUTE_HUB_INSTANCE = previousName;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test.skipIf(process.platform !== "darwin")("external service setup retains validation cleanup on success and failure", async () => {
   const root = mkdtempSync(join(tmpdir(), "codex-web-external-setup-"));
   const configPath = join(root, "config.json");

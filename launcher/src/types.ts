@@ -38,6 +38,7 @@ export interface BrowserState {
   url: string;
   title: string;
   authenticated: boolean;
+  accountKey?: string | null;
   visible: boolean;
   surfaceActive: boolean;
   loading: boolean;
@@ -47,6 +48,17 @@ export interface BrowserState {
   activeTabId: string;
   maxTabs: number;
   tabs: BrowserTabState[];
+}
+
+export interface AccountListState {
+  activeProfileId: string;
+  profiles: Array<{
+    id: string;
+    label: string;
+    identified: boolean;
+    tunnelConfigured: boolean;
+    online?: boolean;
+  }>;
 }
 
 export interface BrowserTabState {
@@ -97,12 +109,14 @@ export type UpdateState =
 
 export interface LauncherSnapshot {
   profile: LauncherProfile;
+  instanceName: string | null;
   profilePaths: {
     coreHome: string;
     codexHome: string;
     userData: string;
   };
   state: LauncherState;
+  accounts: AccountListState;
   browser: BrowserState | null;
   connectorName: string;
   connectorNames: Record<BrowserInteractionMode, string>;
@@ -141,11 +155,30 @@ export interface RoutingStatus {
   last: { ok: boolean; status: string; message?: string; clientRestarted?: boolean } | null;
 }
 
+export interface AccountRoutingStatus {
+  profileId: string;
+  status: RoutingStatus;
+}
+
+export interface RoutingBatchResult {
+  enabled: boolean;
+  results: Array<AccountRoutingStatus & { ok: boolean; error?: string }>;
+}
+
 export interface LauncherApi {
   routingStatus(): Promise<RoutingStatus>;
+  routingStatuses(): Promise<AccountRoutingStatus[]>;
   setRouting(enabled: boolean): Promise<RoutingStatus>;
+  setRoutingBulk(profileIds: string[], enabled: boolean): Promise<RoutingBatchResult>;
   syncRouting(): Promise<RoutingStatus>;
   snapshot(): Promise<LauncherSnapshot>;
+  createAccount(): Promise<AccountListState>;
+  selectAccount(profileId: string): Promise<AccountListState>;
+  stageAccountTunnel(input: { profileId: string; tunnelId: string; runtimeKey: string }): Promise<{
+    profileId: string;
+    tunnelId: string;
+    staged: true;
+  }>;
   setLanguage(language: Language): Promise<LauncherState>;
   openSocial(target: "github" | "x"): Promise<LauncherState>;
   completeOnboarding(language: Language, browserInteractionMode: BrowserInteractionMode): Promise<LauncherState>;
@@ -199,6 +232,8 @@ export interface LauncherApi {
   windowControl(action: "close" | "minimize" | "zoom"): void;
   onWindowStateChanged(listener: (state: { fullScreen: boolean; maximized: boolean }) => void): () => void;
   onStateChanged(listener: (state: LauncherState) => void): () => void;
+  onAccountsChanged(listener: (accounts: AccountListState) => void): () => void;
+  onAccountContextChanged(listener: (snapshot: LauncherSnapshot) => void): () => void;
   onBrowserState(listener: (state: BrowserState) => void): () => void;
   onOperation(listener: (state: OperationState) => void): () => void;
   onLog(listener: (record: LogRecord) => void): () => void;

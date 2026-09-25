@@ -373,9 +373,13 @@ async function configureTunnel(config: AppConfig, existing: AppConfig | undefine
   const productionProfileName = interactionMode === "manual"
     ? "codex-chatgpt-web-zero-risk"
     : "codex-chatgpt-web";
+  const namedInstance = process.env.CODEX_ROUTE_HUB_INSTANCE?.trim();
+  if (namedInstance && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(namedInstance)) {
+    throw new Error("Invalid Route Hub instance name for Tunnel alias");
+  }
   const profileName = config.purpose === DEV_CONFIG_PURPOSE
     ? interactionMode === "manual" ? `${DEV_TUNNEL_BASE_NAME}-zero-risk` : DEV_TUNNEL_BASE_NAME
-    : productionProfileName;
+    : namedInstance ? `${productionProfileName}-${namedInstance}` : productionProfileName;
   const configuredTunnel = createTunnelConfig({
     binaryPath: installedBinary,
     tunnelId,
@@ -497,12 +501,17 @@ export function preflightSetup(options: SetupOptions): void {
 
 export async function setup(options: SetupOptions): Promise<SetupResult> {
   const { existing, config, launcherOwned } = prepareSetup(options);
+  const namedLauncher = launcherOwned && Boolean(process.env.CODEX_ROUTE_HUB_INSTANCE?.trim());
   preflightCodexIntegration(config, {
     replaceExistingRoute: options.replaceCodexRoute,
   });
   const refreshTunnelWorker = tunnelWorkerRuntimeChanged(existing, config);
   if (existing && options.restartService) config.controlToken = randomBytes(32).toString("base64url");
-  const beforeService = getServiceStatus();
+  // Named Hub instances never own the legacy global launchd labels. A default
+  // instance may use them, and observing or removing them here would disrupt it.
+  const beforeService = namedLauncher
+    ? { installed: false, loaded: false }
+    : getServiceStatus();
   if (launcherOwned && (beforeService.installed || beforeService.loaded)) {
     if (!existing) {
       throw new Error("A legacy background service exists without a verifiable configuration; refusing automatic migration");
@@ -610,16 +619,20 @@ export async function setup(options: SetupOptions): Promise<SetupResult> {
 
   let tunnelReady: boolean | null = null;
   if (config.mode === "browser-only" && existing?.mode === "full") {
-    const previousTunnelService = getTunnelServiceStatus();
-    if (previousTunnelService.installed || previousTunnelService.loaded) await uninstallTunnelService();
+    if (!namedLauncher) {
+      const previousTunnelService = getTunnelServiceStatus();
+      if (previousTunnelService.installed || previousTunnelService.loaded) await uninstallTunnelService();
+    }
     stopTunnel(existing);
   }
   if (config.mode === "full") {
     const profilePath = join(config.tunnel!.profileDir, `${config.tunnel!.profileName}.yaml`);
-    const tunnelService = getTunnelServiceStatus();
+    const tunnelService = namedLauncher
+      ? { installed: false, loaded: false }
+      : getTunnelServiceStatus();
     const needsProfile = !existsSync(profilePath);
     if (launcherOwned) {
-      if (tunnelService.installed || tunnelService.loaded) await uninstallTunnelService();
+      if (!namedLauncher && (tunnelService.installed || tunnelService.loaded)) await uninstallTunnelService();
       // Commit the inputs before acquiring a runtime. The launcher supervisor creates the
       // profile, proves readiness/MCP health, and cleans up failed startup under one owner.
     } else {

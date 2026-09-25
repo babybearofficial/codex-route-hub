@@ -22,6 +22,7 @@ import type {
   LauncherState,
   LogRecord,
   OperationState,
+  RoutingStatus,
   Surface,
 } from "./types";
 
@@ -33,6 +34,13 @@ const MCP_GUIDE_MEDIA = [
   new URL("./assets/mcp-connect-connector.mp4", import.meta.url).href,
   new URL("./assets/mcp-connect-connector.mp4", import.meta.url).href,
 ] as const;
+const ACCOUNT_COPY: Record<Language, { heading: string; add: string; online: string; saved: string; login: string; tunnel: string }> = {
+  en: { heading: "Accounts", add: "Add account", online: "Online", saved: "Saved", login: "Sign in", tunnel: "Set Tunnel" },
+  "zh-CN": { heading: "账号列表", add: "添加账号", online: "在线", saved: "已保存", login: "登录", tunnel: "配置 Tunnel" },
+  "zh-TW": { heading: "帳號列表", add: "新增帳號", online: "在線", saved: "已儲存", login: "登入", tunnel: "設定 Tunnel" },
+  ja: { heading: "アカウント", add: "アカウント追加", online: "オンライン", saved: "保存済み", login: "ログイン", tunnel: "Tunnel 設定" },
+  ko: { heading: "계정", add: "계정 추가", online: "온라인", saved: "저장됨", login: "로그인", tunnel: "Tunnel 설정" },
+};
 
 export function App() {
   const [snapshot, setSnapshot] = useState<LauncherSnapshot | null>(null);
@@ -70,6 +78,19 @@ export function App() {
         : current);
     });
     const unsubscribeBrowser = api.onBrowserState(setBrowser);
+    const unsubscribeAccounts = api.onAccountsChanged((accounts) => {
+      setSnapshot((current) => current ? {
+        ...current, accounts,
+        mcpCredentialsConfigured: current.state.browserInteractionMode === "automatic"
+          ? accounts.profiles.some(profile => profile.id === accounts.activeProfileId && profile.tunnelConfigured)
+          : current.mcpCredentialsConfigured,
+      } : current);
+    });
+    const unsubscribeAccountContext = api.onAccountContextChanged((next) => {
+      setSnapshot(next);
+      setBrowser(next.browser);
+      setOperation(next.operation);
+    });
     const unsubscribeOperation = api.onOperation((next) => {
       setOperation(next);
       if (next.status === "failed" && next.name !== "mcp-verification") setError(next.message);
@@ -82,6 +103,8 @@ export function App() {
       cancelled = true;
       unsubscribeState();
       unsubscribeBrowser();
+      unsubscribeAccounts();
+      unsubscribeAccountContext();
       unsubscribeOperation();
       unsubscribeLog();
       unsubscribeUpdate();
@@ -130,6 +153,7 @@ export function App() {
             language={language}
             logs={logs}
             operation={operation}
+            refreshSnapshot={(next) => { setSnapshot(next); setBrowser(next.browser); }}
             setError={setError}
             snapshot={snapshot}
             updateState={updateState}
@@ -253,6 +277,8 @@ function Onboarding({
             </div>
           ) : isInteraction ? (
             <InteractionModePicker
+              automaticOnly={Boolean(snapshot.instanceName)
+                || snapshot.accounts.profiles.some(profile => profile.id !== "default")}
               className="welcome-interaction-mode-picker"
               copy={localized}
               disabled={busy}
@@ -319,6 +345,7 @@ function LauncherShell({
   language,
   logs,
   operation,
+  refreshSnapshot,
   setError,
   snapshot,
   updateState,
@@ -328,6 +355,7 @@ function LauncherShell({
   language: Language;
   logs: LogRecord[];
   operation: OperationState | null;
+  refreshSnapshot: (next: LauncherSnapshot) => void;
   setError: (error: string | null) => void;
   snapshot: LauncherSnapshot;
   updateState: (state: LauncherState) => void;
@@ -341,11 +369,13 @@ function LauncherShell({
     snapshot.profile !== "development" && snapshot.state.routingDisabled ? "startup" : firstRunZeroRiskSetup ? "mcp" : interactionSetupComplete ? "browser" : "setup",
   );
   const devProfile = snapshot.profile === "development";
+  const accountCopy = ACCOUNT_COPY[language];
   const compactAtMount = useRef(window.matchMedia(COMPACT_SIDEBAR_QUERY).matches).current;
   const [sidebarOpen, setSidebarOpen] = useState(!compactAtMount);
   const [compactSidebar, setCompactSidebar] = useState(compactAtMount);
   const [browserSlot, setBrowserSlot] = useState<HTMLDivElement | null>(null);
   const [sessionReminderBusy, setSessionReminderBusy] = useState(false);
+  const [accountBusy, setAccountBusy] = useState(false);
   const [sessionReminderDue, setSessionReminderDue] = useState(false);
   const [mcpTargetMode, setMcpTargetMode] = useState<BrowserInteractionMode | null>(null);
   const [biggerContextRecommendationOpen, setBiggerContextRecommendationOpen] = useState(
@@ -368,6 +398,9 @@ function LauncherShell({
   const updateBusy = snapshot.update.status === "downloading" || snapshot.update.status === "installing";
   const updateVersion = "version" in snapshot.update ? snapshot.update.version : null;
   const selectedManualTab = browser?.tabs.find(tab => tab.active && tab.interactionMode === "manual");
+  const accountSwitchDisabled = Boolean(snapshot.instanceName)
+    || snapshot.state.browserInteractionMode !== "automatic"
+    || accountBusy;
 
   useEffect(() => {
     if (snapshot.state.browserInteractionMode === "manual") {
@@ -416,7 +449,7 @@ function LauncherShell({
       observer?.disconnect();
       window.removeEventListener("resize", measure);
     };
-  }, [browserSlot, browserSurfaceActive, setError]);
+  }, [browserSlot, browserSurfaceActive, snapshot.accounts.activeProfileId, setError]);
 
   useEffect(() => {
     const media = window.matchMedia(COMPACT_SIDEBAR_QUERY);
@@ -474,6 +507,26 @@ function LauncherShell({
       await api!.installUpdate();
     } catch (cause) {
       setError(messageOf(cause));
+    }
+  };
+
+  const changeAccount = async (profileId?: string) => {
+    if (accountSwitchDisabled) return;
+    setAccountBusy(true);
+    setError(null);
+    try {
+      if (profileId) await api!.selectAccount(profileId);
+      else await api!.createAccount();
+      const next = await api!.snapshot();
+      refreshSnapshot(next);
+      setMcpTargetMode(null);
+      setSurface("browser");
+      await api!.setBrowserSurfaceActive(true);
+      await api!.showBrowser();
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setAccountBusy(false);
     }
   };
 
@@ -585,6 +638,34 @@ function LauncherShell({
                 />
               </SidebarGroup>
               <SidebarGroup label={copy.configuration}>
+                <div className="sidebar-accounts" aria-label={accountCopy.heading}>
+                  <div className="sidebar-accounts-heading">
+                    <span>{snapshot.instanceName ? `${accountCopy.heading} · ${snapshot.instanceName}` : accountCopy.heading}</span>
+                    {!snapshot.instanceName && <button
+                      disabled={accountSwitchDisabled || snapshot.accounts.profiles.length >= 8}
+                      onClick={() => void changeAccount()}
+                      title={accountCopy.add}
+                      type="button"
+                    >+</button>}
+                  </div>
+                  {snapshot.accounts.profiles.map((profile) => (
+                    <button
+                      aria-current={profile.id === snapshot.accounts.activeProfileId ? "true" : undefined}
+                      className={`sidebar-account${profile.id === snapshot.accounts.activeProfileId ? " is-active" : ""}`}
+                      disabled={accountSwitchDisabled}
+                      key={profile.id}
+                      onClick={() => void changeAccount(profile.id)}
+                      title={`${profile.label} · ${profile.tunnelConfigured ? accountCopy.saved : accountCopy.tunnel}`}
+                      type="button"
+                    >
+                      <span className="sidebar-account-indicator" />
+                      <span className="sidebar-account-label">{profile.label}</span>
+                      <small>{profile.online === true || (profile.id === snapshot.accounts.activeProfileId && browser?.authenticated)
+                        ? accountCopy.online : !profile.identified ? accountCopy.login
+                          : profile.tunnelConfigured ? accountCopy.saved : accountCopy.tunnel}</small>
+                    </button>
+                  ))}
+                </div>
                 <SidebarItem
                   active={surface === "setup"}
                   badge={needsSetup ? <ActionDot pulse tone="required" /> : null}
@@ -670,6 +751,7 @@ function LauncherShell({
             ) : null}
             {surface === "mcp" ? (
               <McpSurface
+                key={snapshot.accounts.activeProfileId}
                 copy={copy}
                 devProfile={devProfile}
                 interactionMode={mcpTargetMode ?? snapshot.state.browserInteractionMode}
@@ -678,6 +760,10 @@ function LauncherShell({
                   setMcpTargetMode(null);
                   setSurface("browser");
                 }}
+                onOpenStartup={() => {
+                  setMcpTargetMode(null);
+                  setSurface("startup");
+                }}
                 operation={operation}
                 setError={setError}
                 snapshot={snapshot}
@@ -685,7 +771,8 @@ function LauncherShell({
               />
             ) : null}
             {surface === "startup" ? (
-              <StartupSurface operation={operation} logs={logs} disabled={devProfile} onConfigure={() => navigateSurface("setup")} />
+              <StartupSurface accounts={snapshot.accounts} operation={operation} logs={logs}
+                disabled={devProfile} onConfigure={() => navigateSurface("setup")} />
             ) : null}
             {surface === "activity" ? (
               <ActivitySurface copy={copy} language={language} logs={logs} setError={setError} />
@@ -1204,7 +1291,8 @@ function SetupSurface({
       <SectionHeading label="MCP" meta={manualInteraction ? copy.required : copy.optional} spaced />
       <button
         className="next-surface-row"
-        disabled={!manualInteraction && (!snapshot.state.coreSetupComplete || snapshot.state.routingDisabled)}
+        disabled={!manualInteraction && snapshot.accounts.activeProfileId === "default"
+          && (!snapshot.state.coreSetupComplete || snapshot.state.routingDisabled)}
         onClick={showMcp}
         type="button"
       >
@@ -1226,6 +1314,7 @@ function McpSurface({
   interactionMode,
   language,
   onDone,
+  onOpenStartup,
   operation,
   setError,
   snapshot,
@@ -1236,15 +1325,22 @@ function McpSurface({
   interactionMode: BrowserInteractionMode;
   language: Language;
   onDone: () => void;
+  onOpenStartup: () => void;
   operation: OperationState | null;
   setError: (error: string | null) => void;
   snapshot: LauncherSnapshot;
   updateState: (state: LauncherState) => void;
 }) {
   const routingConfigured = snapshot.state.coreSetupComplete === true && !snapshot.state.routingDisabled;
+  const namedAccount = !devProfile && interactionMode === "automatic"
+    && snapshot.accounts.activeProfileId !== "default";
+  const selectedAccount = snapshot.accounts.profiles.find(
+    profile => profile.id === snapshot.accounts.activeProfileId,
+  );
   const configuringInactiveMode = interactionMode !== snapshot.state.browserInteractionMode;
   const [step, setStep] = useState(
-    configuringInactiveMode ? 1 : Math.min(2, Math.max(0, snapshot.state.mcpGuideStep || 0)),
+    namedAccount && snapshot.state.routingDisabled ? 1
+      : configuringInactiveMode ? 1 : Math.min(2, Math.max(0, snapshot.state.mcpGuideStep || 0)),
   );
   const [tunnelId, setTunnelId] = useState("");
   const [runtimeKey, setRuntimeKey] = useState("");
@@ -1253,6 +1349,27 @@ function McpSurface({
       ? snapshot.mcpCredentialsConfigured
       : false,
   );
+  const savedCredentials = namedAccount
+    ? selectedAccount?.tunnelConfigured === true : credentialsConfigured;
+  const [selectedRouting, setSelectedRouting] = useState<RoutingStatus | null>(null);
+  useEffect(() => {
+    if (!namedAccount) return;
+    let cancelled = false;
+    const refresh = () => {
+      void api!.routingStatus().then(status => {
+        if (!cancelled) setSelectedRouting(status);
+      }).catch(() => {
+        if (!cancelled) setSelectedRouting(null);
+      });
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 5_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [namedAccount, snapshot.accounts.activeProfileId]);
+  const selectedBridgeReady = selectedRouting?.enabled === true
+    && selectedRouting.routeActive === true
+    && selectedRouting.runtimeReady === true
+    && selectedRouting.proxyHealthy === true;
   const [replacingCredentials, setReplacingCredentials] = useState(false);
   const [localBusy, setLocalBusy] = useState(false);
   const busy = localBusy || operation?.status === "running";
@@ -1295,9 +1412,25 @@ function McpSurface({
     setLocalBusy(true);
     setError(null);
     try {
+      if (namedAccount) {
+        if (!savedCredentials || replacingCredentials) {
+          await api!.stageAccountTunnel({
+            profileId: snapshot.accounts.activeProfileId, tunnelId, runtimeKey,
+          });
+          setRuntimeKey("");
+          setTunnelId("");
+          setCredentialsConfigured(true);
+          setReplacingCredentials(false);
+          onOpenStartup();
+          return;
+        }
+        if (routingConfigured) await move(2);
+        else onOpenStartup();
+        return;
+      }
       await api!.setupMcp({
         interactionMode,
-        ...(credentialsConfigured && !replacingCredentials
+        ...(savedCredentials && !replacingCredentials
           ? { replace: false }
           : { tunnelId, runtimeKey, replace: true }),
       });
@@ -1334,8 +1467,26 @@ function McpSurface({
       subtitle={devProfile ? copy.devMcpSubtitle : copy.mcpSubtitle}
       title={devProfile ? copy.devMcpTitle : "MCP"}
     >
+      {namedAccount ? (
+        <div className="mcp-account-status" aria-label={language.startsWith("zh") ? "当前账号配置状态" : "Selected account configuration status"}>
+          <strong>{language.startsWith("zh") ? "当前账号" : "Account"}：{selectedAccount?.label ?? snapshot.accounts.activeProfileId}</strong>
+          <span>
+            {language.startsWith("zh") ? "登录" : "Login"}：{selectedAccount?.online ? (language.startsWith("zh") ? "在线" : "online") : (language.startsWith("zh") ? "待验证" : "unverified")}
+            {" · Tunnel："}{savedCredentials ? (language.startsWith("zh") ? "已保存" : "saved") : (language.startsWith("zh") ? "未配置" : "missing")}
+            {" · "}{language.startsWith("zh") ? "桥接" : "Bridge"}：{selectedRouting?.routeActive === true && selectedRouting.runtimeReady
+              ? (language.startsWith("zh") ? "运行中" : "running")
+              : selectedRouting?.enabled ? (language.startsWith("zh") ? "待就绪" : "pending")
+                : (language.startsWith("zh") ? "已停止" : "stopped")}
+            {" · "}{language.startsWith("zh") ? "插件验证" : "Plugin verification"}：{verified
+              ? (language.startsWith("zh") ? "通过" : "passed")
+              : (language.startsWith("zh") ? "未验证" : "unverified")}
+          </span>
+        </div>
+      ) : null}
       {!manualInteraction && !configuringInactiveMode && !routingConfigured ? (
-        <NoticeRow icon="setup" tone="warning">{copy.mcpCatalogRequired}</NoticeRow>
+        <NoticeRow icon="setup" tone="warning">{namedAccount
+          ? "先保存此账号的 Tunnel ID 和运行密钥，再到“启动配置”勾选账号启动桥接。保存凭据不会重启 Codex。"
+          : copy.mcpCatalogRequired}</NoticeRow>
       ) : null}
 
       <div className="wizard-stepper" aria-label={`${step + 1} / 3`}>
@@ -1390,7 +1541,7 @@ function McpSurface({
               </div>
             ) : null}
             {step === 1 ? (
-              credentialsConfigured && !replacingCredentials ? (
+              savedCredentials && !replacingCredentials ? (
                 <div className="saved-credentials">
                   <NoticeRow icon="check" tone="success">
                     <span>
@@ -1400,7 +1551,7 @@ function McpSurface({
                   </NoticeRow>
                   <button
                     className="text-button"
-                    disabled={busy}
+                    disabled={busy || (namedAccount && routingConfigured)}
                     onClick={() => setReplacingCredentials(true)}
                     type="button"
                   >
@@ -1430,7 +1581,7 @@ function McpSurface({
                       value={runtimeKey}
                     />
                   </FieldRow>
-                  {credentialsConfigured ? (
+                  {savedCredentials ? (
                     <button
                       className="text-button keep-credentials"
                       disabled={busy}
@@ -1449,13 +1600,22 @@ function McpSurface({
             ) : null}
             {step === 1 ? (
               <p className="mcp-step-two-hint">
-                {manualInteraction || configuringInactiveMode || routingConfigured
-                  ? copy.mcpStepTwoHint
-                  : copy.mcpCatalogRequired}
+                {namedAccount && !routingConfigured
+                  ? "保存凭据后前往“启动配置”，选择账号并启动桥接。"
+                  : manualInteraction || configuringInactiveMode || routingConfigured
+                    ? copy.mcpStepTwoHint
+                    : copy.mcpCatalogRequired}
               </p>
             ) : null}
             {step === 2 ? (
               <div className="connector-actions">
+                {namedAccount && !selectedBridgeReady ? (
+                  <NoticeRow icon="setup" tone="warning">
+                    {language.startsWith("zh")
+                      ? "当前账号的本地代理和 Tunnel 尚未同时就绪。请先在“启动配置”启动此账号桥接，再验证插件。"
+                      : "This account's local proxy and Tunnel are not both ready. Start its bridge in Startup Configuration before verifying the plugin."}
+                  </NoticeRow>
+                ) : null}
                 <NoticeRow icon="alert" tone="warning">
                   {manualInteraction
                     ? copy.manualConnectorNotice
@@ -1496,26 +1656,34 @@ function McpSurface({
           <PrimaryButton
             disabled={
               busy
-              || (!manualInteraction && !configuringInactiveMode && !routingConfigured)
-              || ((!credentialsConfigured || replacingCredentials) && (!tunnelId || !runtimeKey))
+              || (!namedAccount && !manualInteraction && !configuringInactiveMode && !routingConfigured)
+              || ((!savedCredentials || replacingCredentials) && (!tunnelId || !runtimeKey))
             }
             onClick={() => void install()}
           >
-            {busy ? copy.running : credentialsConfigured && !replacingCredentials ? copy.reconnect : copy.connect}
+            {busy ? copy.running : namedAccount
+              ? savedCredentials && !replacingCredentials
+                ? routingConfigured ? "继续配置插件" : "前往启动配置"
+                : "保存此账号 Tunnel"
+              : savedCredentials && !replacingCredentials ? copy.reconnect : copy.connect}
           </PrimaryButton>
         ) : null}
         {step === 2 ? (
           <>
-            {verified ? (
+            {verified && (!namedAccount || selectedBridgeReady) ? (
               <SecondaryButton disabled={busy} onClick={() => void verify()}>
                 {copy.verifyRuntime}
               </SecondaryButton>
             ) : null}
             <PrimaryButton
               disabled={busy}
-              onClick={() => void (verified ? onDone() : verify())}
+              onClick={() => void (namedAccount && !selectedBridgeReady
+                ? onOpenStartup()
+                : verified ? onDone() : verify())}
             >
-              {busy
+              {namedAccount && !selectedBridgeReady
+                ? (language.startsWith("zh") ? "前往启动配置" : "Open Startup Configuration")
+                : busy
                 ? operation?.name === "mcp-verification" && operation.status === "running"
                   ? localizeRuntimeMessage(copy, operation.message, undefined, language)
                   : copy.running
@@ -1683,7 +1851,7 @@ function SettingsSurface({
       </SettingRow> : null}
       <SectionHeading label={copy.general} />
       <div className="settings-list">
-        {!devProfile ? <SettingRow body={copy.launchAtLoginBody} flushAfter label={copy.launchAtLogin}>
+        {!devProfile && !snapshot.instanceName ? <SettingRow body={copy.launchAtLoginBody} flushAfter label={copy.launchAtLogin}>
           <Switch
             checked={snapshot.state.autoStart}
             onChange={(checked) => void api!.setAutostart(checked)
@@ -1692,6 +1860,8 @@ function SettingsSurface({
           />
         </SettingRow> : null}
         <InteractionModePicker
+          automaticOnly={Boolean(snapshot.instanceName)
+            || snapshot.accounts.profiles.some(profile => profile.id !== "default")}
           copy={copy}
           disabled={busy}
           mode={snapshot.state.browserInteractionMode}
@@ -2067,12 +2237,14 @@ function NoticeRow({
 }
 
 function InteractionModePicker({
+  automaticOnly = false,
   className,
   copy,
   disabled,
   mode,
   onChange,
 }: {
+  automaticOnly?: boolean;
   className?: string;
   copy: Copy;
   disabled: boolean;
@@ -2101,7 +2273,7 @@ function InteractionModePicker({
           <small>{copy.automaticInteractionBody}</small>
         </span>
       </button>
-      <button
+      {!automaticOnly && <button
         aria-checked={mode === "manual"}
         className={mode === "manual" ? "is-selected" : ""}
         disabled={disabled}
@@ -2116,7 +2288,7 @@ function InteractionModePicker({
           <strong>{copy.manualInteraction}</strong>
           <small>{copy.manualInteractionBody}</small>
         </span>
-      </button>
+      </button>}
     </div>
   );
 }

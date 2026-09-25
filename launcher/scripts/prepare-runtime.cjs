@@ -30,3 +30,29 @@ if (notices.error) throw notices.error;
 if (notices.status !== 0) process.exit(notices.status ?? 1);
 fs.copyFileSync(path.join(repositoryRoot, "LICENSE"), path.join(output, "LICENSE"));
 fs.cpSync(path.join(repositoryRoot, "LICENSES"), path.join(output, "LICENSES"), { recursive: true });
+// electron-builder excludes an extraResources source from app.asar. Stage a separate copy so
+// main.cjs can require the module while bundled Bun can execute the standalone guard.
+const guardOutput = path.join(launcherRoot, "build", "guard");
+fs.mkdirSync(guardOutput, { recursive: true });
+fs.copyFileSync(
+  path.join(launcherRoot, "electron", "route-exit-guard.cjs"),
+  path.join(guardOutput, "route-exit-guard.cjs"),
+);
+fs.copyFileSync(
+  path.join(launcherRoot, "electron", "codex-backend-refresh.cjs"),
+  path.join(guardOutput, "codex-backend-refresh.cjs"),
+);
+// Stage the CLI profile manager separately. Using electron/ directly as an
+// extraResources source makes electron-builder exclude these same modules from
+// app.asar, where the Hub main process also needs them.
+const profileManagerOutput = path.join(launcherRoot, "build", "profile-manager");
+fs.mkdirSync(profileManagerOutput, { recursive: true });
+for (const name of [
+  "profile-manager.cjs",
+  "named-instance.cjs",
+  "accounts.cjs",
+  "account-identity.cjs",
+  "atomic-file.cjs",
+]) {
+  fs.copyFileSync(path.join(launcherRoot, "electron", name), path.join(profileManagerOutput, name));
+}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { LogRecord, OperationState, RoutingStatus } from "./types";
+import type { AccountListState, LogRecord, OperationState, RoutingBatchResult, RoutingStatus } from "./types";
 
 const api = window.codexWebLauncher;
 
@@ -54,34 +54,50 @@ export function describeRouting(status: RoutingStatus | null): { runtime: string
   return { runtime: runtimeLabel, route, routeDetail, catalog };
 }
 
-export function StartupSurface({ operation, logs, disabled, onConfigure }: {
+export function StartupSurface({ accounts, operation, logs, disabled, onConfigure }: {
+  accounts: AccountListState;
   operation: OperationState | null;
   logs: LogRecord[];
   disabled: boolean;
   onConfigure: () => void;
 }) {
   const [status, setStatus] = useState<RoutingStatus | null>(null);
+  const [accountStatuses, setAccountStatuses] = useState<Record<string, RoutingStatus>>({});
+  const [selectedIds, setSelectedIds] = useState<string[]>(() => accounts.activeProfileId ? [accounts.activeProfileId] : []);
+  const [batchResult, setBatchResult] = useState<RoutingBatchResult | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [automatic, setAutomatic] = useState(() => localStorage.getItem("routing-auto-refresh") !== "false");
   const mounted = useRef(false);
   const reading = useRef(false);
   const changing = useRef(false);
+  const selectAll = useRef<HTMLInputElement>(null);
+  const readRouting = useCallback(async () => {
+    const [next, list] = await Promise.all([api!.routingStatus(), api!.routingStatuses()]);
+    if (mounted.current) {
+      setStatus(next);
+      setAccountStatuses(Object.fromEntries(list.map(item => [item.profileId, item.status])));
+    }
+  }, []);
   const refresh = useCallback(async () => {
     if (reading.current || changing.current || disabled) return;
     reading.current = true;
     try {
-      const next = await api!.routingStatus();
-      if (mounted.current && !changing.current) { setStatus(next); setError(null); }
+      await readRouting();
+      if (mounted.current && !changing.current) setError(null);
     } catch (cause) {
       if (mounted.current) setError(String(cause));
     } finally { reading.current = false; }
-  }, [disabled]);
+  }, [disabled, readRouting]);
 
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; };
   }, []);
+  useEffect(() => {
+    const valid = new Set(accounts.profiles.map(profile => profile.id));
+    setSelectedIds(current => current.filter(id => valid.has(id)));
+  }, [accounts.profiles]);
   useEffect(() => {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -91,7 +107,7 @@ export function StartupSurface({ operation, logs, disabled, onConfigure }: {
     };
     void tick();
     return () => { stopped = true; clearTimeout(timer); };
-  }, [automatic, refresh]);
+  }, [automatic, refresh, accounts.activeProfileId]);
 
   // One serialized action at a time; the status is re-read after completion because the
   // operation result itself still reports busy=true.
@@ -104,33 +120,90 @@ export function StartupSurface({ operation, logs, disabled, onConfigure }: {
     catch (cause) { if (mounted.current) setError(String(cause)); }
     finally {
       changing.current = false;
-      try { const next = await api!.routingStatus(); if (mounted.current) setStatus(next); } catch { /* retain action error */ }
+      try { await readRouting(); } catch { /* retain action error */ }
       if (mounted.current) setPending(false);
     }
   };
-  const change = (enabled: boolean) => perform(() => api!.setRouting(enabled));
+  const change = async (enabled: boolean) => {
+    if (changing.current || selectedIds.length === 0) return;
+    changing.current = true;
+    setPending(true);
+    setError(null);
+    setBatchResult(null);
+    try {
+      const result = await api!.setRoutingBulk(selectedIds, enabled);
+      if (mounted.current) setBatchResult(result);
+    } catch (cause) {
+      if (mounted.current) setError(String(cause));
+    } finally {
+      changing.current = false;
+      try { await readRouting(); } catch { /* retain operation result */ }
+      if (mounted.current) setPending(false);
+    }
+  };
   const sync = () => perform(() => api!.syncRouting());
-  const busy = pending || status?.busy === true || operation?.status === "running";
+  const busy = pending || status?.busy === true || operation?.status === "running"
+    || selectedIds.some(id => accountStatuses[id]?.busy === true);
   const cards = describeRouting(status);
+  const allIds = accounts.profiles.map(profile => profile.id);
+  const allSelected = allIds.length > 0 && allIds.every(id => selectedIds.includes(id));
+  const selectedCount = selectedIds.length;
+  useEffect(() => {
+    if (selectAll.current) selectAll.current.indeterminate = selectedCount > 0 && !allSelected;
+  }, [selectedCount, allSelected]);
+  const toggleAccount = (id: string, checked: boolean) => {
+    setSelectedIds(current => checked ? [...new Set([...current, id])] : current.filter(value => value !== id));
+    setBatchResult(null);
+  };
+  const accountLabel = (id: string) => accounts.profiles.find(profile => profile.id === id)?.label ?? id;
 
   return <section className="content-surface startup-surface"><div className="content-scroll startup-content">
     <header className="surface-header"><h1>启动配置</h1>
-      <p>应用内管理 Codex 路由。启动时先验证登录态，再正常退出 ChatGPT.app（Codex），等待路由就绪后重新打开；启用期间应用持续监测代理与 Tunnel，休眠唤醒后自动恢复。停止时恢复本次启动前的配置，并重启 Codex 使其回到原连接方式。</p>
+      <p>按账号管理独立的 Codex 路由、桥接和 Tunnel。勾选账号后可批量启动或停止；应用依次处理每个账号，并显示各自结果。路由切换会在后台重启对应的 Codex 客户端。</p>
     </header>
     {disabled ? <p role="alert">启动配置仅在正式运行模式可用。</p> : null}
     <div className="routing-cards" aria-live="polite">
       <article><h2>Codex Route Hub</h2><strong>应用运行中</strong><p>停止路由后仍可在此重新启动</p></article>
-      <article><h2>本地桥 / Tunnel</h2><strong>{cards.runtime}</strong>
+      <article><h2>本地桥 / Tunnel（当前账号）</h2><strong>{cards.runtime}</strong>
         <p>{status?.runtimeDetail ? status.runtimeDetail : "由应用统一管理进程"}{status?.observedAt ? `（检测于 ${new Date(status.observedAt).toLocaleTimeString()}）` : ""}</p></article>
-      <article><h2>Codex 路由</h2><strong>{cards.route}</strong><p>{cards.routeDetail}</p></article>
-      <article><h2>模型目录</h2><strong>{cards.catalog}</strong><p>以 Codex 通过本地代理发出的模型目录请求为准</p></article>
+      <article><h2>Codex 路由（当前账号）</h2><strong>{cards.route}</strong><p>{cards.routeDetail}</p></article>
+      <article><h2>模型目录（当前账号）</h2><strong>{cards.catalog}</strong><p>以 Codex 通过本地代理发出的模型目录请求为准</p></article>
     </div>
+    <fieldset className="routing-account-picker" disabled={disabled || pending}>
+      <legend>选择桥接账号</legend>
+      <label className="routing-account-select-all">
+        <input ref={selectAll} type="checkbox" checked={allSelected}
+          onChange={event => { setSelectedIds(event.target.checked ? allIds : []); setBatchResult(null); }} />
+        全选账号（{selectedCount}/{allIds.length}）
+      </label>
+      <div className="routing-account-list">
+        {accounts.profiles.map(profile => {
+          const accountStatus = accountStatuses[profile.id];
+          return <label className="routing-account-row" key={profile.id}>
+            <input type="checkbox" checked={selectedIds.includes(profile.id)}
+              onChange={event => toggleAccount(profile.id, event.target.checked)} />
+            <span className="routing-account-name">{profile.label}</span>
+            <small>{accountStatus ? describeRouting(accountStatus).route : "读取中…"}
+              {!profile.tunnelConfigured ? " · Tunnel 待配置" : ""}</small>
+          </label>;
+        })}
+      </div>
+    </fieldset>
     <div className="routing-actions">
-      <button className="button-primary" disabled={disabled || busy || !status} onClick={() => void change(true)}>启动路由并重启 Codex</button>
-      <button className="button-secondary" disabled={disabled || busy || !status} onClick={() => void change(false)}>停止路由并恢复原连接（重启 Codex）</button>
-      <button className="button-secondary" disabled={disabled || busy || !status || !status.enabled} onClick={() => void sync()}>同步模型到 Codex（重启 Codex 并验证）</button>
+      <button className="button-primary" disabled={disabled || busy || selectedCount === 0}
+        onClick={() => void change(true)}>启动所选账号桥接（{selectedCount}）</button>
+      <button className="button-secondary" disabled={disabled || busy || selectedCount === 0}
+        onClick={() => void change(false)}>停止所选账号桥接（{selectedCount}）</button>
+      <button className="button-secondary" disabled={disabled || busy || !status || !status.enabled}
+        onClick={() => void sync()}>同步当前账号模型到 Codex（重启并验证）</button>
     </div>
-    <p>停止路由会正常退出 Codex、结束本应用管理的代理和隧道并恢复配置，然后在后台重新打开 Codex。Codex 若正在执行任务并拒绝退出，则不会改动任何配置。</p>
+    <p>启动和停止会依次重启所选账号对应的 Codex 客户端；停止时恢复该账号原有连接配置。一个账号失败不会阻止其余账号处理。</p>
+    {batchResult ? <div className="routing-batch-result" role="status" aria-live="polite">
+      {batchResult.results.map(result => <p key={result.profileId} className={result.ok ? "" : "routing-error"}>
+        {accountLabel(result.profileId)}：{result.ok ? (batchResult.enabled ? "桥接已启动" : "桥接已停止")
+          : `操作失败：${result.error ?? "状态未通过验证"}`}
+      </p>)}
+    </div> : null}
     <div className="routing-refresh">
       <button className="button-secondary" disabled={busy} onClick={onConfigure}>模型与连接设置</button>
       <button className="button-secondary" disabled={disabled || busy} onClick={() => void refresh()}>刷新状态</button>

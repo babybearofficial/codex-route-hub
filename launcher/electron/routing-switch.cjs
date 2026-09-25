@@ -474,11 +474,23 @@ class RoutingSwitch {
   // it cannot write config.toml concurrently), stops the owned runtime, restores the
   // pre-activation configuration and reopens Codex only if it was running. `client: false`
   // is used by the enable rollback, which owns the client itself.
-  async disable({ client = true } = {}) {
+  async disable({ client = true, restoreBeforeStop = false, refreshBackend = false } = {}) {
     const previous = this.store.read();
     // Codex only needs the restart when its config still carries the managed route; quitting
     // the launcher while routing is already off must not touch the user's Codex session.
-    const restartClient = client && Boolean(this.client) && this.routeActive() !== false;
+    const refreshMarker = path.join(this.host.coreHome, 'runtime', 'backend-refresh-pending.json');
+    let pendingBackendRefresh = false;
+    if (fs.existsSync(refreshMarker)) {
+      const marker = JSON.parse(fs.readFileSync(refreshMarker, 'utf8'));
+      if (marker.codexHome !== this.host.codexHome) {
+        throw new Error('Backend refresh marker belongs to another Codex home');
+      }
+      pendingBackendRefresh = true;
+    }
+    const restartClient = client && Boolean(this.client)
+      && (this.routeActive() !== false || pendingBackendRefresh);
+    const refreshRunningBackend = !restartClient && refreshBackend && Boolean(this.client)
+      && (this.routeActive() !== false || previous.codexRestartRequired === true || pendingBackendRefresh);
     let clientStopped = false;
     let runtimeStopped = false;
     this.update({ routingDisabled: true });
@@ -490,19 +502,39 @@ class RoutingSwitch {
         await this.client.stop();
         clientStopped = true;
       }
+      // A running client may still have the old endpoint cached. Restore the durable route
+      // before stopping the proxy on a launcher quit, so the crash guard observes the same order.
+      const restore = () => this.host.restoreBridgeRoute();
+      if (refreshRunningBackend) {
+        writePrivateFileAtomic(refreshMarker, JSON.stringify({ codexHome: this.host.codexHome }));
+      }
+      const route = restoreBeforeStop ? await restore() : null;
+      let backendRefreshed = false;
+      if (restoreBeforeStop && refreshRunningBackend) {
+        await this.client.refreshBackend();
+        backendRefreshed = true;
+        fs.rmSync(refreshMarker, { force: true });
+      }
       // Existing supervisor owns drain, tunnel, daemon, restart timers and process trees.
       await this.supervisor.stopForSetup();
       runtimeStopped = true;
-      const route = await this.host.restoreBridgeRoute();
-      if (route.active) throw new Error('Web GPT route remains active after restore');
+      const restored = route || await restore();
+      if (restored.active) throw new Error('Web GPT route remains active after restore');
+      if (!restoreBeforeStop && refreshRunningBackend) {
+        await this.client.refreshBackend();
+        backendRefreshed = true;
+        fs.rmSync(refreshMarker, { force: true });
+      }
       this.archiveCheckpoint();
       let reopened = false;
       if (restartClient) {
         this.publishOperation?.({ name: 'routing', status: 'running', message: '已恢复原连接，正在后台重新打开 Codex…' });
         reopened = (await this.client.reopen({ recovery: true }))?.reopened === true;
+        fs.rmSync(refreshMarker, { force: true });
       }
-      this.update({ codexRestartRequired: restartClient ? false : (route.changed === true || previous.codexRestartRequired === true) });
-      this.last = { ok: true, status: 'off', clientRestarted: reopened };
+      this.update({ codexRestartRequired: restartClient || backendRefreshed ? false
+        : (restored.changed === true || previous.codexRestartRequired === true) });
+      this.last = { ok: true, status: 'off', clientRestarted: reopened, backendRefreshed };
       this.publishOperation?.({ name: 'routing', status: 'completed',
         message: reopened ? 'Previous Codex configuration restored; Codex reopened on the original connection'
           : 'Previous Codex configuration restored; Codex will use the original connection when it starts' });

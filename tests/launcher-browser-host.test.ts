@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,6 +34,7 @@ function descriptorFile(
   controlEndpoint = "http://127.0.0.1:39111",
   profile: "production" | "development" = "production",
   endpoint = "http://127.0.0.1:39110",
+  partition?: string,
 ): string {
   const root = mkdtempSync(join(tmpdir(), "codex-launcher-descriptor-"));
   roots.push(root);
@@ -51,9 +53,9 @@ function descriptorFile(
       executable: process.execPath,
       script: import.meta.path,
     },
-    partition: profile === "development"
+    partition: partition ?? (profile === "development"
       ? "persist:codex-web-gpt-dev-chatgpt"
-      : "persist:codex-web-gpt-chatgpt",
+      : "persist:codex-web-gpt-chatgpt"),
     idleUrl: LAUNCHER_BROWSER_IDLE_URL,
     surfaceId: "launcher_surface_id_0123456789AB",
     surfaceTargets: { ["launcher_surface_id_0123456789AB"]: "native-owned-target" },
@@ -75,6 +77,17 @@ test("launcher descriptor is owner-only, loopback-only, and process-bound", () =
     chmodSync(path, 0o644);
     expect(() => readLauncherBrowserHostDescriptor(path)).toThrow("unsafe permissions");
   }
+});
+
+test("named account runtime accepts only its own isolated browser partition", () => {
+  const alicePartition = `persist:codex-web-gpt-chatgpt-account-${createHash("sha256")
+    .update("route-hub-instance:alice").digest("hex").slice(0, 32)}`;
+  const descriptor = descriptorFile(undefined, "production", undefined, alicePartition);
+  expect(readLauncherBrowserHostDescriptor(descriptor,
+    { CODEX_ROUTE_HUB_INSTANCE: "alice" }).partition).toBe(alicePartition);
+  expect(() => readLauncherBrowserHostDescriptor(descriptor,
+    { CODEX_ROUTE_HUB_INSTANCE: "bob" })).toThrow("unexpected browser partition");
+  expect(() => readLauncherBrowserHostDescriptor(descriptor, {})).toThrow("unexpected browser partition");
 });
 
 test("launcher turn control sends authenticated lifecycle events", async () => {

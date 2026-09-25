@@ -3,7 +3,31 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
-const { verifyConnectorWithBrowserHelper } = require("../electron/browser-helper-verifier.cjs");
+const { runBrowserHelperOperation, verifyConnectorWithBrowserHelper } = require("../electron/browser-helper-verifier.cjs");
+
+test("named browser helper receives its instance identity for partition validation", async (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-browser-helper-instance-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const script = path.join(root, "helper.cjs");
+  fs.writeFileSync(script, `
+    const input = require("node:readline").createInterface({ input: process.stdin });
+    const send = value => process.stdout.write(JSON.stringify(value) + "\\n");
+    send({ type: "ready" });
+    input.on("line", line => {
+      const message = JSON.parse(line);
+      if (message.type === "shutdown") process.exit(0);
+      send({ type: "result", id: message.id, instanceName: process.env.CODEX_ROUTE_HUB_INSTANCE || null });
+    });
+  `);
+  const helper = { executable: process.execPath, script };
+  const options = { helper, descriptorPath: "/runtime/launcher-browser.json",
+    appName: "Codex Native2", operation: "inspect", logger: { info() {} } };
+
+  const named = await runBrowserHelperOperation({ ...options, instanceName: "godelgodel4ever" });
+  assert.equal(named.instanceName, "godelgodel4ever");
+  const unnamed = await runBrowserHelperOperation(options);
+  assert.equal(unnamed.instanceName, null);
+});
 
 test("launcher verification delegates exact connector selection to the browser helper protocol", async (context) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-browser-helper-verify-"));

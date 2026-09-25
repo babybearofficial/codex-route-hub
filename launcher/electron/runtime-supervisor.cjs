@@ -327,6 +327,8 @@ class RuntimeSupervisor {
     installedRuntimeRoot,
     runtimeRootProvider,
     coreHome,
+    codexHome,
+    instanceName = null,
     browserDescriptorPath,
     launcherProfile = "production",
     publishOperation,
@@ -338,6 +340,8 @@ class RuntimeSupervisor {
     this.installedRuntimeRoot = installedRuntimeRoot;
     this.runtimeRootProvider = runtimeRootProvider;
     this.coreHome = coreHome;
+    this.codexHome = codexHome || process.env.CODEX_HOME;
+    this.instanceName = instanceName;
     this.browserDescriptorPath = browserDescriptorPath;
     if (launcherProfile !== "production" && launcherProfile !== "development") {
       throw new Error("Runtime supervisor launcher profile is invalid");
@@ -497,6 +501,11 @@ class RuntimeSupervisor {
       detached: DETACH_OWNED_CHILD,
       env: {
         ...process.env,
+        ...(this.launcherProfile === "production" ? {
+          CODEX_CHATGPT_WEB_HOME: this.coreHome,
+          ...(this.codexHome ? { CODEX_HOME: this.codexHome } : {}),
+          ...(this.instanceName ? { CODEX_ROUTE_HUB_INSTANCE: this.instanceName } : {}),
+        } : {}),
         CODEX_CHATGPT_WEB_BROWSER_HOST_DESCRIPTOR: this.browserDescriptorPath,
       },
       stdio: ["ignore", "pipe", "pipe"],

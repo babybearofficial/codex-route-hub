@@ -320,10 +320,13 @@ test("the idle home browser performs one bounded reload for a Cloudflare challen
   const fixture = Object.assign(Object.create(BrowserHost.prototype), {
     turnTabs: new Map(),
     manualOperation: null,
+    visible: true,
+    surfaceActive: true,
     cloudflareChallengeRecovery: null,
     cloudflareChallengeRecoveryArmed: true,
     cloudflareChallengeRecoveryDelayMs: 0,
     cloudflareChallengeRecoverySettleMs: 0,
+    clickCloudflareChallenge: async () => ({ clicked: false }),
     view: {
       webContents: {
         id: 42,
@@ -374,6 +377,7 @@ test("session inspection may recover its owned surface after a Cloudflare challe
     cloudflareChallengeRecoveryArmed: true,
     cloudflareChallengeRecoveryDelayMs: 0,
     cloudflareChallengeRecoverySettleMs: 0,
+    clickCloudflareChallenge: async () => ({ clicked: false }),
     view: {
       webContents: {
         id: 43,
@@ -401,6 +405,72 @@ test("session inspection may recover its owned surface after a Cloudflare challe
     ["loadURL", "https://chatgpt.com/?temporary-chat=true"],
   ]);
   assert.ok(!calls.some(([name, event]) => name === "warn" && event === "browser.cloudflare_challenge_not_reloaded"));
+});
+
+test("a parked account defers Cloudflare navigation until its own browser is shown", async () => {
+  const loaded = [];
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    turnTabs: new Map(), manualOperation: "session refresh", visible: false, surfaceActive: false,
+    cloudflareChallengeRecovery: null, cloudflareChallengeRecoveryArmed: true,
+    cloudflareChallengePending: false,
+    cloudflareChallengeRecoveryDelayMs: 0, cloudflareChallengeRecoverySettleMs: 0,
+    view: { webContents: {
+      id: 60, isDestroyed: () => false, getURL: () => "https://chatgpt.com/c/owned",
+      loadURL: async url => loaded.push(url),
+    } },
+    logger: { warn() {}, info() {}, error() {} }, setState() {},
+    clickCloudflareChallenge: async () => ({ clicked: false }),
+    probeAuthentication: async () => ({ authenticated: true }),
+  });
+  const challenge = { statusCode: 403, webContentsId: 60,
+    url: "https://chatgpt.com/backend-api/subscriptions",
+    responseHeaders: { "cf-mitigated": ["challenge"] } };
+  assert.equal(fixture.handleChatGptBackendResponse(challenge), true);
+  assert.equal(fixture.cloudflareChallengePending, true);
+  assert.deepEqual(loaded, []);
+  fixture.manualOperation = null;
+  fixture.visible = true;
+  fixture.surfaceActive = true;
+  fixture.resumeCloudflareChallengeRecovery();
+  await fixture.cloudflareChallengeRecovery;
+  assert.deepEqual(loaded, ["https://chatgpt.com/c/owned"]);
+  assert.equal(fixture.cloudflareChallengePending, false);
+});
+
+test("account browser views transfer between their private window and the Hub shell", () => {
+  const makeWindow = () => {
+    const window = new EventEmitter();
+    const children = [];
+    window.contentView = {
+      children,
+      addChildView: view => children.push(view),
+      removeChildView: view => children.splice(children.indexOf(view), 1),
+    };
+    window.isDestroyed = () => false;
+    window.webContents = new EventEmitter();
+    window.webContents.isDestroyed = () => false;
+    return window;
+  };
+  const parking = makeWindow();
+  const shell = makeWindow();
+  const home = { id: "home" };
+  const turn = { id: "turn" };
+  const auth = { id: "auth" };
+  parking.contentView.children.push(home, turn, auth);
+  const listener = () => {};
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    window: parking, windowVisibilityListener: listener, view: home,
+    turnTabs: new Map([["turn", { view: turn }]]), authView: auth,
+    shellZoomShortcutBindings: new Map(), bindShellZoomShortcuts() {},
+    syncViewVisibility() {},
+  });
+  fixture.attachWindow(shell);
+  assert.deepEqual(parking.contentView.children, []);
+  assert.deepEqual(shell.contentView.children, [home, turn, auth]);
+  assert.equal(fixture.window, shell);
+  fixture.attachWindow(parking);
+  assert.deepEqual(shell.contentView.children, []);
+  assert.deepEqual(parking.contentView.children, [home, turn, auth]);
 });
 
 test("user-facing browser operations still keep their surface stable during a challenge", () => {
@@ -579,6 +649,7 @@ test("browser surface reactivation preserves its last measured bounds", () => {
     syncViewVisibility() {
       visibility.push({ active: this.surfaceActive, boundsReady: this.boundsReady });
     },
+    resumeCloudflareChallengeRecovery() {},
     setState() {},
     snapshot() {
       return { surfaceActive: this.surfaceActive, boundsReady: this.boundsReady };
@@ -894,6 +965,7 @@ test("launcher authentication requires the Temporary Chat composer and complete 
           composer: true,
           temporary: true,
           sessionAuthenticated: true,
+          sessionUser: { id: "fixture" },
           readyState: "complete",
         }),
       },
@@ -906,6 +978,32 @@ test("launcher authentication requires the Temporary Chat composer and complete 
   const result = await BrowserHost.prototype.probeAuthentication.call(fixture);
   assert.equal(result.authenticated, true);
   assert.equal(result.status, "ready");
+});
+
+test("a matching account remains authenticated on its existing conversation or Plugins page", async () => {
+  const accountKey = createHash("sha256").update("fixture").digest("hex");
+  for (const url of ["https://chatgpt.com/c/owned", "https://chatgpt.com/plugins"]) {
+    const fixture = {
+      state: { authenticated: false }, activeTraceId: null, manualOperation: null,
+      expectedAccountKey: accountKey,
+      view: { webContents: {
+        isDestroyed: () => false, getURL: () => url,
+        executeJavaScript: async () => ({
+          url, composer: false, temporary: false, sessionAuthenticated: true,
+          sessionUser: { id: "fixture" }, readyState: "complete",
+        }),
+        loadURL: async () => { throw new Error("Existing account page must not navigate"); },
+      } },
+      logger: { info() {} },
+      setState(patch) { this.state = { ...this.state, ...patch }; },
+      snapshot() { return this.state; },
+      probeAuthentication(options) { return BrowserHost.prototype.probeAuthentication.call(this, options); },
+    };
+    assert.equal(await BrowserHost.prototype.assertBoundAccountIdentity.call(fixture), accountKey);
+    assert.equal(fixture.state.authenticated, true);
+    fixture.expectedAccountKey = "0".repeat(64);
+    await assert.rejects(BrowserHost.prototype.assertBoundAccountIdentity.call(fixture), /not verified for the selected tunnel/);
+  }
 });
 
 test("session verification distinguishes a missing login from network and invalid-response failures", async () => {
@@ -1273,6 +1371,7 @@ test("OAuth completion is re-proved on the primary Temporary Chat surface before
         composer: true,
         temporary: false,
         sessionAuthenticated: true,
+        sessionUser: { id: "fixture" },
         readyState: "complete",
       }),
     },
@@ -1293,6 +1392,7 @@ test("OAuth completion is re-proved on the primary Temporary Chat surface before
           composer: primaryReady,
           temporary: primaryReady,
           sessionAuthenticated: primaryReady,
+          sessionUser: primaryReady ? { id: "fixture" } : null,
           readyState: "complete",
           url: primaryReady
             ? "https://chatgpt.com/?temporary-chat=true"
@@ -1337,6 +1437,7 @@ test("a successful primary login redirect is re-proved on Temporary Chat before 
           composer: true,
           temporary: currentUrl === "https://chatgpt.com/?temporary-chat=true",
           sessionAuthenticated: true,
+          sessionUser: { id: "fixture" },
           readyState: "complete",
           url: currentUrl,
         }),
@@ -1384,6 +1485,7 @@ test("an authenticated primary surface closes a stale embedded auth popup", asyn
           composer: true,
           temporary: true,
           sessionAuthenticated: true,
+          sessionUser: { id: "fixture" },
           readyState: "complete",
           url: "https://chatgpt.com/?temporary-chat=true",
         }),
@@ -1552,6 +1654,7 @@ test("connector verification is effort-independent and works while the browser s
   const fixture = {
     helper: { executable: "/runtime/electron", script: "/runtime/browser-helper.cjs" },
     descriptorPath: "/runtime/launcher-browser.json",
+    instanceName: "godelgodel4ever",
     logger: { info: (event, detail) => calls.push(["log", event, detail]) },
     setState: (patch) => calls.push(["state", patch]),
     show: () => calls.push(["show"]),
@@ -1578,6 +1681,7 @@ test("connector verification is effort-independent and works while the browser s
         descriptorPath: fixture.descriptorPath,
         appName: "Codex Native2",
         logger: fixture.logger,
+        instanceName: fixture.instanceName,
       }],
     ],
   );
@@ -2014,6 +2118,22 @@ test("launcher session refresh resolves persisted authentication before setup ac
     ["probe"],
     ["state", { status: "ready", message: "ChatGPT is ready" }],
   ]);
+});
+
+test("background session refresh checks an existing conversation without replacing its URL", async () => {
+  const calls = [];
+  const fixture = {
+    sessionRefreshOperation: null,
+    view: { webContents: {
+      getURL: () => "https://chatgpt.com/c/owned",
+      loadURL: async () => { throw new Error("Background refresh must not navigate"); },
+    } },
+    setState() {}, snapshot: () => ({ authenticated: true }),
+    withManualOperation: async (_name, action) => await action(),
+    probeAuthentication: async options => { calls.push(options); return { authenticated: true }; },
+  };
+  await BrowserHost.prototype.refreshAuthentication.call(fixture);
+  assert.deepEqual(calls, [{ requireComposer: false }]);
 });
 
 test("concurrent launcher session refresh requests share one browser operation", async () => {

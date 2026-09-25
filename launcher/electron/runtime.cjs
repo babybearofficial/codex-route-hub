@@ -171,6 +171,9 @@ class RuntimeHost {
     browserDescriptorPath,
     coreHome,
     codexHome,
+    userData,
+    proxyPort = null,
+    instanceName = null,
     launcherProfile = "production",
     launchAgentsDir,
     platform = process.platform,
@@ -189,6 +192,7 @@ class RuntimeHost {
     }
     this.launcherProfile = launcherProfile;
     this.coreHome = coreHome ? resolveUserPath(coreHome) : null;
+    this.userData = userData ? resolveUserPath(userData) : this.app.getPath("userData");
     if (launcherProfile === "development" && !this.coreHome) {
       throw new Error("Runtime host DEV profile requires its isolated home");
     }
@@ -198,6 +202,11 @@ class RuntimeHost {
       : process.env.CODEX_HOME?.trim()
         ? resolveUserPath(process.env.CODEX_HOME.trim())
         : path.join(os.homedir(), ".codex");
+    if (proxyPort !== null && (!Number.isInteger(proxyPort) || proxyPort < 1 || proxyPort > 65535)) {
+      throw new Error("Named Route Hub proxy port is invalid");
+    }
+    this.proxyPort = proxyPort;
+    this.instanceName = instanceName;
     this.launchAgentsDir = launchAgentsDir
       ? resolveUserPath(launchAgentsDir)
       : path.join(os.homedir(), "Library", "LaunchAgents");
@@ -250,7 +259,7 @@ class RuntimeHost {
   }
 
   cleanupEphemeralSecrets() {
-    const secretsDir = path.join(this.app.getPath("userData"), "secrets");
+    const secretsDir = path.join(this.userData, "secrets");
     try {
       for (const entry of fs.readdirSync(secretsDir, { withFileTypes: true })) {
         if (/^runtime-key-(?:\d+|[a-f0-9]{32})\.tmp$/.test(entry.name)) {
@@ -267,7 +276,7 @@ class RuntimeHost {
   }
 
   cleanupPasskeyTransfers() {
-    const parent = path.join(this.app.getPath("userData"), "passkey-login");
+    const parent = path.join(this.userData, "passkey-login");
     let entries;
     try {
       entries = fs.readdirSync(parent, { withFileTypes: true });
@@ -329,7 +338,7 @@ class RuntimeHost {
   async capturePasskeyLogin() {
     this.cleanupPasskeyTransfers();
     const chrome = this.passkeyChromeExecutable();
-    const parent = path.join(this.app.getPath("userData"), "passkey-login");
+    const parent = path.join(this.userData, "passkey-login");
     fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
     try { fs.chmodSync(parent, 0o700); } catch {}
     const transferRoot = fs.mkdtempSync(path.join(parent, "transfer-"));
@@ -431,7 +440,13 @@ class RuntimeHost {
         serialized: null,
       };
     }
+    if (this.proxyPort !== null && setupConfig.port !== this.proxyPort) {
+      throw new Error(`This instance owns port ${this.proxyPort}, but its runtime is configured for port ${setupConfig.port}`);
+    }
     const launcherOwned = setupConfig.browserHost === "launcher";
+    if (this.instanceName && !launcherOwned) {
+      throw new Error("Named Route Hub instances cannot adopt a terminal-managed runtime");
+    }
     const config = launcherOwned ? this.supervisor.readConfig() : setupConfig;
     return {
       configured: true,
@@ -620,6 +635,11 @@ class RuntimeHost {
           ? { ...options.environment }
           : { ...process.env };
         Object.assign(environment, {
+          ...(this.launcherProfile === "production" ? {
+            CODEX_CHATGPT_WEB_HOME: this.coreHome,
+            CODEX_HOME: this.codexHome,
+            ...(this.instanceName ? { CODEX_ROUTE_HUB_INSTANCE: this.instanceName } : {}),
+          } : {}),
           CODEX_CHATGPT_WEB_BROWSER_HOST_DESCRIPTOR: this.browserDescriptorPath,
           ...(options.env || {}),
         });
@@ -1166,9 +1186,11 @@ class RuntimeHost {
     const connectorMigrationRequired = existing.mode === "full"
       && isLegacyConnectorName(validateConnectorName(existing.config?.appName));
     const interactionMode = existing.config?.browserInteractionMode ?? "automatic";
-    const expectedTunnelProfile = interactionMode === "manual"
+    const baseTunnelProfile = interactionMode === "manual"
       ? "codex-chatgpt-web-zero-risk"
       : "codex-chatgpt-web";
+    const expectedTunnelProfile = this.instanceName
+      ? `${baseTunnelProfile}-${this.instanceName}` : baseTunnelProfile;
     const expectedKeyFile = interactionMode === "manual"
       ? "tunnel-runtime-zero-risk.key"
       : "tunnel-runtime-automatic.key";
@@ -1226,7 +1248,7 @@ class RuntimeHost {
     };
   }
 
-  setupMcp({ tunnelId = "", runtimeKey = "", replace = false, interactionMode } = {}, afterRuntimeReady) {
+  setupMcp({ tunnelId = "", runtimeKey = "", trustedRuntimeKeyFile = null, replace = false, interactionMode } = {}, afterRuntimeReady) {
     this.assertProductionProfile("Native Codex MCP setup");
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
     const targetMode = interactionMode ?? this.browserInteractionMode();
@@ -1234,8 +1256,13 @@ class RuntimeHost {
     if (!reuseSavedCredentials && !/^tunnel_[a-f0-9]{32}$/.test(tunnelId)) {
       throw new Error("Tunnel ID must be tunnel_ followed by 32 lowercase hexadecimal characters");
     }
-    if (!reuseSavedCredentials && (typeof runtimeKey !== "string" || runtimeKey.trim().length < 20)) {
+    if (!reuseSavedCredentials && !trustedRuntimeKeyFile
+      && (typeof runtimeKey !== "string" || runtimeKey.trim().length < 20)) {
       throw new Error("A Tunnels Read + Use runtime key is required");
+    }
+    if (trustedRuntimeKeyFile && (!path.isAbsolute(trustedRuntimeKeyFile)
+      || !fs.existsSync(trustedRuntimeKeyFile))) {
+      throw new Error("Saved account tunnel key is unavailable");
     }
     const args = [
       "setup",
@@ -1254,7 +1281,17 @@ class RuntimeHost {
         afterRuntimeReady,
       });
     }
-    const secretsDir = path.join(this.app.getPath("userData"), "secrets");
+    if (trustedRuntimeKeyFile) {
+      args.push("--tunnel-id", tunnelId, "--runtime-key-file", trustedRuntimeKeyFile,
+        "--acknowledge-unofficial", "--restart-service");
+      return this.runSetup("mcp-setup", args, {
+        message: "Connecting the selected account's tunnel",
+        successMessage: "Selected account tunnel is ready",
+        timeoutMs: MCP_SETUP_TIMEOUT_MS,
+        afterRuntimeReady,
+      });
+    }
+    const secretsDir = path.join(this.userData, "secrets");
     fs.mkdirSync(secretsDir, { recursive: true, mode: 0o700 });
     try { fs.chmodSync(secretsDir, 0o700); } catch {}
     const keyPath = path.join(secretsDir, `runtime-key-${randomBytes(16).toString("hex")}.tmp`);
@@ -1305,7 +1342,7 @@ class RuntimeHost {
         afterRuntimeReady,
       });
     }
-    const secretsDir = path.join(this.app.getPath("userData"), "secrets");
+    const secretsDir = path.join(this.userData, "secrets");
     fs.mkdirSync(secretsDir, { recursive: true, mode: 0o700 });
     try { fs.chmodSync(secretsDir, 0o700); } catch {}
     const keyPath = path.join(secretsDir, `runtime-key-${randomBytes(16).toString("hex")}.tmp`);
@@ -1372,6 +1409,10 @@ class RuntimeHost {
 
   async runSetup(name, args, options) {
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
+    if (this.proxyPort !== null && args[0] === "setup") {
+      if (args.includes("--port")) throw new Error("Named instance setup cannot override its assigned proxy port");
+      args = [...args, "--port", String(this.proxyPort)];
+    }
     const previousRuntime = this.runtimeConfigSnapshot();
     const checkpoint = this.captureSetupCheckpoint(previousRuntime);
     this.lifecycleOperation = name;

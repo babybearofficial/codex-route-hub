@@ -6,6 +6,65 @@ const path = require('node:path');
 const { RoutingSwitch, KEEPER_RECOVERY_BACKOFF_MS, KEEPER_TRANSITION_STALE_MS, KEEPER_UNHEALTHY_STREAK, CATALOG_SYNC_TIMEOUT_MS,
   STARTUP_RETRY_DELAYS_MS } = require('../electron/routing-switch.cjs');
 
+test('ordinary Route Hub quit restores routing without touching ChatGPT.app', async () => {
+  const w = world({ client: true });
+  try {
+    await w.control.setEnabled(true);
+    const before = w.calls.length;
+    const status = await w.control.setEnabled(false, { client: false, restoreBeforeStop: true });
+    assert.equal(status.last.status, 'off');
+    assert.deepEqual(w.calls.slice(before), ['restore', 'stop']);
+    assert.equal(w.codex.running, true);
+    assert.equal(w.state.codexRestartRequired, true);
+  } finally { w.cleanup(); }
+});
+
+test('Route Hub quit refreshes only the desktop backend after restoring its route', async () => {
+  const w = world({ client: true });
+  try {
+    await w.control.setEnabled(true);
+    const before = w.calls.length;
+    w.codex.refreshBackend = async () => {
+      w.calls.push('refresh-backend');
+      assert.equal(w.routeActive(), false);
+      assert.equal(w.isReady(), true);
+      assert.equal(fs.existsSync(path.join(w.host.coreHome, 'runtime', 'backend-refresh-pending.json')), true);
+      return { status: 'refreshed' };
+    };
+    const status = await w.control.setEnabled(false, { client: false, restoreBeforeStop: true,
+      refreshBackend: true });
+    assert.deepEqual(w.calls.slice(before), ['restore', 'refresh-backend', 'stop']);
+    assert.equal(status.codexRestartRequired, false);
+    assert.equal(status.last.backendRefreshed, true);
+    assert.equal(w.codex.running, true);
+    assert.equal(fs.existsSync(path.join(w.host.coreHome, 'runtime', 'backend-refresh-pending.json')), false);
+  } finally { w.cleanup(); }
+});
+
+test('an interrupted backend refresh is retried before the proxy is stopped', async () => {
+  const w = world({ client: true });
+  try {
+    await w.control.setEnabled(true);
+    let attempts = 0;
+    w.codex.refreshBackend = async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('backend restart timed out');
+      return { status: 'refreshed' };
+    };
+    await assert.rejects(w.control.setEnabled(false, { client: false, restoreBeforeStop: true,
+      refreshBackend: true }), /backend restart timed out/);
+    assert.equal(w.routeActive(), false);
+    assert.equal(w.isReady(), true);
+    assert.equal(fs.existsSync(path.join(w.host.coreHome, 'runtime', 'backend-refresh-pending.json')), true);
+    const status = await w.control.setEnabled(false, { client: false, restoreBeforeStop: true,
+      refreshBackend: true });
+    assert.equal(attempts, 2);
+    assert.equal(status.codexRestartRequired, false);
+    assert.equal(w.isReady(), false);
+    assert.equal(fs.existsSync(path.join(w.host.coreHome, 'runtime', 'backend-refresh-pending.json')), false);
+  } finally { w.cleanup(); }
+});
+
 const INSTALLED = 'http://127.0.0.1:17841/v1';
 const ORIGINAL_LINE = 'openai_base_url="https://original.example/v1"';
 const ROUTE_LINE = `openai_base_url = "${INSTALLED}"`;

@@ -2,10 +2,11 @@ const languages = require("./languages.json");
 const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const { pathToFileURL } = require("node:url");
 const {
   app,
+  BaseWindow,
   BrowserWindow,
   dialog,
   ipcMain,
@@ -19,6 +20,13 @@ const {
   Tray,
 } = require("electron");
 const { BrowserHost, navigationErrorForLog } = require("./browser-host.cjs");
+const { writePrivateFileAtomic } = require("./atomic-file.cjs");
+const { assertActiveTunnelBinding, createAccountStore } = require("./accounts.cjs");
+const { HubContexts, partitionForInstance, profileIdForInstance } = require("./hub-contexts.cjs");
+const { namedRoutingControl, routingStatuses, setRoutingBatch } = require("./hub-routing-batch.cjs");
+const { stageNamedTunnel } = require("./hub-tunnel-stage.cjs");
+const { instancePaths, instanceRoot, listInstances, readInstance } = require("./named-instance.cjs");
+const { assertMatchingAccount } = require("./account-identity.cjs");
 const { BrowserControlServer } = require("./control-server.cjs");
 const { getAutostart, setAutostart } = require("./autostart.cjs");
 const {
@@ -32,8 +40,9 @@ const { RoutingSwitch } = require("./routing-switch.cjs");
 const { RuntimeHost } = require("./runtime.cjs");
 const { ensurePackagedRuntime, waitForPackagedRuntimeSource } = require("./runtime-install.cjs");
 const { RuntimeSupervisor } = require("./runtime-supervisor.cjs");
+const { startRouteExitGuard } = require("./route-exit-guard.cjs");
 const { DEVELOPMENT_PROFILE, resolveLauncherProfile } = require("./profile.cjs");
-const { runtimeBundlePaths } = require("./runtime-command.cjs");
+const { runtimeBundlePaths, runtimeInvocation } = require("./runtime-command.cjs");
 const { createUpdateController } = require("./update.cjs");
 const {
   createStateStore,
@@ -88,10 +97,17 @@ let mainWindowReadyToShow = false;
 let mainWindowShowRequested = false;
 let startupFailed = false;
 let browserHost = null;
+let accountStore = null;
+let createAccountBrowserHost = null;
 let runtimeHost = null;
 let browserControl = null;
 let runtimeSupervisor = null;
 let routingSwitch = null;
+let routeExitGuard = null;
+let hubContexts = null;
+let sharedLauncherStateStore = null;
+let addNamedContext = null;
+let activateNamedContext = null;
 let tray = null;
 let quitting = false;
 let shutdownInProgress = false;
@@ -112,6 +128,34 @@ function findFreePort() {
       const address = server.address();
       const port = address && typeof address === "object" ? address.port : 0;
       server.close((error) => error ? reject(error) : resolve(port));
+    });
+  });
+}
+
+function createManagedProfile(name) {
+  const managerPath = app.isPackaged
+    ? path.join(process.resourcesPath, "profile-manager", "profile-manager.cjs")
+    : path.join(__dirname, "profile-manager.cjs");
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [managerPath, "create", name, "--json"], {
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let output = "";
+    let errorOutput = "";
+    child.stdout.on("data", chunk => { output = `${output}${chunk}`.slice(-64 * 1024); });
+    child.stderr.on("data", chunk => { errorOutput = `${errorOutput}${chunk}`.slice(-8 * 1024); });
+    child.once("error", reject);
+    child.once("close", code => {
+      if (code !== 0) return reject(new Error(errorOutput.trim() || `Account creation failed (${code})`));
+      try {
+        const created = JSON.parse(output.trim());
+        if (created.name !== name || !created.coreHome || !created.codexHome) {
+          throw new Error("Profile manager returned an invalid account context");
+        }
+        resolve(created);
+      } catch (error) { reject(error); }
     });
   });
 }
@@ -137,7 +181,7 @@ function stopCatalogVerificationMonitor() {
 // proxy. Without one, the first health read becomes the baseline, so a request that predates
 // the change that required a restart is never accepted as evidence. The routing keeper shares
 // the same baseline.
-function startCatalogVerificationMonitor({ logger, stateStore, baseline = null }) {
+function startCatalogVerificationMonitor({ logger, stateStore, baseline = null, supervisor = runtimeSupervisor }) {
   stopCatalogVerificationMonitor();
   let reference = baseline;
   let reportedFailure = null;
@@ -147,11 +191,11 @@ function startCatalogVerificationMonitor({ logger, stateStore, baseline = null }
       stopCatalogVerificationMonitor();
       return;
     }
-    if (catalogVerificationInFlight || !runtimeSupervisor) return;
+    if (catalogVerificationInFlight || !supervisor) return;
     catalogVerificationInFlight = true;
     try {
-      const config = runtimeSupervisor.readConfig();
-      const health = await runtimeSupervisor.proxyHealthPayload(config);
+      const config = supervisor.readConfig();
+      const health = await supervisor.proxyHealthPayload(config);
       if (!reference && Number.isInteger(health?.successful_model_catalog_requests)) {
         reference = { requests: health.successful_model_catalog_requests, atMs: Date.now() };
         if (routingSwitch) routingSwitch.catalogBaseline = { ...reference };
@@ -498,6 +542,14 @@ function validateBrowserInteractionMode(value) {
   return value;
 }
 
+function validateInstanceInteractionMode(value) {
+  const mode = validateBrowserInteractionMode(value);
+  if ((hubContexts || LAUNCHER_PROFILE.instanceName) && mode !== "automatic") {
+    throw new Error("Named account instances require Automatic browser interaction for account/Tunnel binding");
+  }
+  return mode;
+}
+
 function validateBounds(value) {
   if (!value || typeof value !== "object") throw new Error("Browser bounds are required");
   for (const key of ["x", "y", "width", "height"]) {
@@ -511,18 +563,49 @@ function smokePassedForCurrentVersion(state) {
 }
 
 function registerIpc({ logger, stateStore }) {
+  let routingBatchInFlight = false;
+  const stagingAccounts = new Set();
+  const routingContextMap = () => hubContexts?.contexts ?? new Map(
+    routingSwitch && accountStore ? [[accountStore.active().id, { routingSwitch }]] : [],
+  );
+  const updateSharedPreference = patch => {
+    if (!hubContexts) return stateStore.update(patch);
+    sharedLauncherStateStore.update(patch);
+    for (const ctx of hubContexts.contexts.values()) ctx.stateStore.update(patch);
+    return stateStore.read();
+  };
   const lifecycleChannels = new Set([
     "launcher:setup-core", "launcher:setup-mcp", "launcher:uninstall-integration",
+    "launcher:account-create", "launcher:account-select", "launcher:tunnel-stage",
     "launcher:bigger-context", "launcher:zero-risk-pro", "launcher:browser-interaction-mode",
     "launcher:doctor", "launcher:mcp-verify", "launcher:browser-smoke", "launcher:browser-logout",
   ]);
   const handle = (channel, handler) => registerLoggedIpc(ipcMain, logger, channel, (...args) => {
+    if (routingBatchInFlight && (lifecycleChannels.has(channel)
+      || channel === "launcher:routing-set" || channel === "launcher:routing-sync"
+      || channel === "launcher:routing-batch-set")) {
+      throw new Error("Wait for the account routing batch to finish");
+    }
+    if (stagingAccounts.size > 0 && channel === "launcher:routing-batch-set") {
+      throw new Error("Wait for Tunnel credentials to be saved before starting a bridge");
+    }
     if (routingSwitch?.inFlight && lifecycleChannels.has(channel)) {
       throw new Error("Wait for the routing operation to finish");
+    }
+    if ((channel === "launcher:account-create" || channel === "launcher:account-select")
+      && runtimeHost?.currentOperation()) {
+      throw new Error("Wait for the selected account setup operation to finish");
     }
     return handler(...args);
   });
   handle("launcher:routing-status", () => routingSwitch?.status());
+  handle("launcher:routing-statuses", () => routingStatuses(routingContextMap()));
+  handle("launcher:routing-batch-set", async (_event, profileIds, enabled) => {
+    if (IS_DEV_PROFILE) throw new Error("Routing is unavailable in DEV mode");
+    routingBatchInFlight = true;
+    try { return await setRoutingBatch(routingContextMap(), profileIds, enabled); }
+    finally { routingBatchInFlight = false; }
+  });
   handle("launcher:routing-set", (_event, enabled) => {
     if (!routingSwitch) throw new Error("Routing switch is unavailable in DEV mode");
     return routingSwitch.setEnabled(enabled);
@@ -531,21 +614,25 @@ function registerIpc({ logger, stateStore }) {
     if (!routingSwitch) throw new Error("Routing switch is unavailable in DEV mode");
     return routingSwitch.sync();
   });
-  handle("launcher:snapshot", async () => ({
+  const currentSnapshot = () => ({
     profile: LAUNCHER_PROFILE.kind,
+    instanceName: hubContexts ? null : LAUNCHER_PROFILE.instanceName ?? null,
     profilePaths: {
-      coreHome: CORE_HOME,
-      codexHome: LAUNCHER_PROFILE.codexHome,
-      userData: launcherUserData,
+      coreHome: hubContexts ? hubContexts.selected().profile.coreHome : CORE_HOME,
+      codexHome: hubContexts ? hubContexts.selected().profile.codexHome : LAUNCHER_PROFILE.codexHome,
+      userData: hubContexts ? hubContexts.selected().profile.userData : launcherUserData,
     },
     state: stateStore.read(),
+    accounts: accountStore.snapshot(),
     browser: browserHost?.snapshot() ?? null,
     connectorName: runtimeHost.browserConnectorName(),
     connectorNames: {
       automatic: runtimeHost.setupConnectorName(),
       manual: "Codex Zero Risk",
     },
-    mcpCredentialsConfigured: runtimeHost?.mcpCredentialsConfigured() ?? false,
+    mcpCredentialsConfigured: stateStore.read().browserInteractionMode === "automatic"
+      ? Boolean(accountStore.binding(accountStore.active().id))
+      : runtimeHost?.mcpCredentialsConfigured() ?? false,
     logs: logger.recent(),
     urls: { github: GITHUB_URL, x: X_URL, connectors: CONNECTORS_URL, tunnels: TUNNELS_URL, keys: KEYS_URL },
     platform: process.platform,
@@ -554,10 +641,114 @@ function registerIpc({ logger, stateStore }) {
     smokePassed: smokePassedThisSession || smokePassedForCurrentVersion(stateStore.read()),
     operation: lastOperation,
     update: updateController?.getState() ?? { status: "disabled" },
-  }));
+  });
+  handle("launcher:snapshot", async () => currentSnapshot());
+
+  const connectSelectedAccountTunnel = async () => {
+    if (!routingSwitch || !browserHost.snapshot().authenticated) return false;
+    const binding = accountStore.binding(accountStore.active().id);
+    if (!binding) return false;
+    await browserHost.assertBoundAccountIdentity();
+    await routingSwitch.install(() => runtimeHost.setupMcp({
+      tunnelId: binding.tunnelId,
+      trustedRuntimeKeyFile: binding.runtimeKeyFile,
+      replace: true,
+      interactionMode: "automatic",
+    }));
+    assertActiveTunnelBinding(accountStore, accountStore.active().id, runtimeHost.runtimeConfigSnapshot().config);
+    return true;
+  };
+
+  const selectAccount = async profileId => {
+    const previous = accountStore.active();
+    if (previous.id === profileId) return accountStore.snapshot();
+    if (stateStore.read().browserInteractionMode !== "automatic") {
+      throw new Error("Account switching requires Automatic browser interaction");
+    }
+    if (hubContexts) {
+      activateNamedContext(profileId);
+      // Recheck the selected account in its own partition without replacing its page.
+      // The renderer receives a complete account-context snapshot after this check.
+      await browserHost.refreshAuthentication().catch(error => {
+        logger.warn("account.session_refresh_failed", {
+          instance: profileId, ...navigationErrorForLog(error),
+        });
+      });
+      return accountStore.snapshot();
+    }
+    if (browserHost.activeTraceId || browserHost.currentOperation()) {
+      throw new Error("Finish the active browser task before switching accounts");
+    }
+    if (routingSwitch && stateStore.read().routingDisabled !== true) {
+      await routingSwitch.setEnabled(false);
+    }
+    const candidate = createAccountBrowserHost(profileId);
+    try {
+      await candidate.ready();
+      await browserHost.persistSession();
+    } catch (error) {
+      candidate.destroy();
+      throw error;
+    }
+    const old = browserHost;
+    old.hide();
+    old.destroy();
+    accountStore.select(profileId);
+    browserHost = candidate;
+    candidate.writeDescriptor();
+    const state = stateStore.update({ mcpSetupComplete: false, browserSmokePassed: false });
+    send("launcher:state-changed", state);
+    send("launcher:accounts-changed", accountStore.snapshot());
+    send("launcher:browser-state", candidate.snapshot());
+    await candidate.refreshAuthentication().catch(error => {
+      logger.warn("account.session_refresh_failed", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
+    if (candidate.snapshot().authenticated) await connectSelectedAccountTunnel();
+    return accountStore.snapshot();
+  };
+  handle("launcher:account-create", async () => {
+    if (hubContexts) {
+      let number = hubContexts.contexts.size + 1;
+      while (hubContexts.contexts.has(`account-${number}`)) number += 1;
+      const name = `account-${number}`;
+      await createManagedProfile(name);
+      const accounts = await addNamedContext(name);
+      send("launcher:account-context-changed", currentSnapshot());
+      return accounts;
+    }
+    const created = accountStore.create();
+    send("launcher:accounts-changed", accountStore.snapshot());
+    await selectAccount(created.id);
+    send("launcher:account-context-changed", currentSnapshot());
+    return accountStore.snapshot();
+  });
+  handle("launcher:account-select", async (_event, profileId) => {
+    const accounts = await selectAccount(profileId);
+    send("launcher:account-context-changed", currentSnapshot());
+    return accounts;
+  });
+  handle("launcher:tunnel-stage", async (_event, input) => {
+    if (!hubContexts) throw new Error("Tunnel staging requires a named Route Hub account");
+    const profileId = input?.profileId;
+    if (typeof profileId !== "string" || !hubContexts.contexts.has(profileId)) {
+      throw new Error("Choose a registered Route Hub account before saving Tunnel credentials");
+    }
+    const ctx = hubContexts.get(profileId);
+    if (stagingAccounts.has(profileId)) throw new Error("Tunnel credentials are already being saved for this account");
+    stagingAccounts.add(profileId);
+    try {
+      const result = await stageNamedTunnel(ctx, input);
+      send("launcher:accounts-changed", hubContexts.snapshot());
+      return { profileId, ...result };
+    } finally {
+      stagingAccounts.delete(profileId);
+    }
+  });
 
   handle("launcher:set-language", (_event, language) => {
-    const state = stateStore.update({ language: validateLanguage(language) });
+    const state = updateSharedPreference({ language: validateLanguage(language) });
     updateTrayMenu(state.language);
     return state;
   });
@@ -571,10 +762,10 @@ function registerIpc({ logger, stateStore }) {
   handle("launcher:complete-onboarding", (_event, language, rawInteractionMode) => {
     const current = stateStore.read();
     if (!current.githubOpened || !current.xOpened) throw new Error("Open the GitHub and X pages before continuing");
-    if (current.autoStart) setAutostart(app, true);
+    if (current.autoStart && !LAUNCHER_PROFILE.instanceName) setAutostart(app, true);
     const next = stateStore.update({
       language: validateLanguage(language),
-      browserInteractionMode: validateBrowserInteractionMode(rawInteractionMode),
+      browserInteractionMode: validateInstanceInteractionMode(rawInteractionMode),
       onboardingComplete: true,
     });
     updateTrayMenu(next.language);
@@ -609,6 +800,8 @@ function registerIpc({ logger, stateStore }) {
   handle("launcher:browser-login", async () => {
     const browser = await browserHost.openLogin();
     if (browser.authenticated) {
+      if (!hubContexts && accountStore.binding(accountStore.active().id)
+        && stateStore.read().routingDisabled === true) await connectSelectedAccountTunnel();
       const state = stateStore.update({ sessionRefreshReminderAt: nextSessionRefreshReminderAt() });
       send("launcher:state-changed", state);
     }
@@ -617,6 +810,8 @@ function registerIpc({ logger, stateStore }) {
   handle("launcher:browser-passkey-login", async () => {
     const browser = await browserHost.openPasskeyLogin();
     if (browser.authenticated) {
+      if (!hubContexts && accountStore.binding(accountStore.active().id)
+        && stateStore.read().routingDisabled === true) await connectSelectedAccountTunnel();
       const state = stateStore.update({ sessionRefreshReminderAt: nextSessionRefreshReminderAt() });
       send("launcher:state-changed", state);
     }
@@ -821,22 +1016,60 @@ function registerIpc({ logger, stateStore }) {
     const currentMode = stateStore.read().browserInteractionMode;
     const interactionMode = input?.interactionMode === undefined
       ? currentMode
-      : validateBrowserInteractionMode(input.interactionMode);
+      : validateInstanceInteractionMode(input.interactionMode);
     const interactionModeChange = interactionMode !== currentMode;
     const setup = IS_DEV_PROFILE
       ? runtimeHost.setupDevMcp.bind(runtimeHost)
       : runtimeHost.setupMcp.bind(runtimeHost);
-    const runSetup = afterRuntimeReady => setup({
-      tunnelId: typeof input?.tunnelId === "string" ? input.tunnelId.trim() : "",
-      runtimeKey: typeof input?.runtimeKey === "string" ? input.runtimeKey : "",
-      replace: input?.replace === true,
-      interactionMode,
-    }, afterRuntimeReady);
+    let releaseTunnelReservation = null;
+    const runSetup = async afterRuntimeReady => {
+      let selectedBinding = null;
+      if (interactionMode === "automatic" && !IS_DEV_PROFILE) {
+        await browserHost.assertBoundAccountIdentity();
+        selectedBinding = accountStore.binding(accountStore.active().id);
+        if (input?.replace !== true && !selectedBinding) {
+          throw new Error("Set a Tunnel ID and runtime key for this ChatGPT account first");
+        }
+        if (hubContexts || LAUNCHER_PROFILE.instanceName) {
+          const requestedTunnelId = input?.replace === true
+            ? (typeof input?.tunnelId === "string" ? input.tunnelId.trim() : "")
+            : selectedBinding?.tunnelId;
+          releaseTunnelReservation = accountStore.reserveTunnel(
+            accountStore.active().id, "automatic", requestedTunnelId,
+          );
+        }
+      }
+      return setup({
+        tunnelId: input?.replace === true
+          ? (typeof input?.tunnelId === "string" ? input.tunnelId.trim() : "")
+          : selectedBinding?.tunnelId || (typeof input?.tunnelId === "string" ? input.tunnelId.trim() : ""),
+        runtimeKey: typeof input?.runtimeKey === "string" ? input.runtimeKey : "",
+        ...(selectedBinding && input?.replace !== true
+          ? { trustedRuntimeKeyFile: selectedBinding.runtimeKeyFile }
+          : {}),
+        replace: interactionMode === "automatic" && !IS_DEV_PROFILE ? true : input?.replace === true,
+        interactionMode,
+      }, afterRuntimeReady);
+    };
     if (!interactionModeChange && interactionMode === "automatic") await browserHost.reveal();
     const prepare = () => interactionModeChange
       ? browserHost.withInteractionModeChange(interactionMode, runSetup)
       : runSetup();
-    const result = IS_DEV_PROFILE ? await prepare() : await routingSwitch.install(prepare);
+    let result;
+    try {
+      result = IS_DEV_PROFILE ? await prepare() : await routingSwitch.install(prepare);
+      if (interactionMode === "automatic" && !IS_DEV_PROFILE) {
+        const config = runtimeHost.runtimeConfigSnapshot().config;
+        const tunnel = config?.automaticTunnel || config?.tunnel;
+        accountStore.saveTunnel(accountStore.active().id, "automatic", tunnel);
+        releaseTunnelReservation = null;
+        assertActiveTunnelBinding(accountStore, accountStore.active().id, config);
+        send("launcher:accounts-changed", accountStore.snapshot());
+      }
+    } catch (error) {
+      releaseTunnelReservation?.();
+      throw error;
+    }
     const state = stateStore.update({
       browserInteractionMode: interactionMode,
       ...(interactionMode === "manual" ? { experimentalBiggerContext: false, experimentalSkillAttachments: false } : {}),
@@ -860,10 +1093,11 @@ function registerIpc({ logger, stateStore }) {
 
   handle("launcher:autostart", (_event, enabled) => {
     if (IS_DEV_PROFILE) throw new Error("The isolated DEV launcher is started explicitly from the repository CLI");
+    if (LAUNCHER_PROFILE.instanceName) throw new Error("Named Route Hub instances are started with the profile manager");
     const desired = enabled === true;
     const autostart = setAutostart(app, desired);
     return {
-      state: stateStore.update({ autoStart: desired }),
+      state: updateSharedPreference({ autoStart: desired }),
       ...autostart,
     };
   });
@@ -907,7 +1141,7 @@ function registerIpc({ logger, stateStore }) {
     return state;
   });
   handle("launcher:browser-interaction-mode", async (_event, rawMode) => {
-    const mode = validateBrowserInteractionMode(rawMode);
+    const mode = validateInstanceInteractionMode(rawMode);
     const current = stateStore.read();
     if (current.browserInteractionMode === mode) {
       return { state: current, credentialsRequired: false, targetMode: mode };
@@ -943,9 +1177,9 @@ function registerIpc({ logger, stateStore }) {
   handle("launcher:set-preference", (_event, key, value) => {
     const ordinary = key === "keepRunningOnClose" || key === "showBrowserDuringTurns";
     if (!ordinary) throw new Error("Unknown preference");
-    return stateStore.update({ [key]: value === true });
+    return updateSharedPreference({ [key]: value === true });
   });
-  handle("launcher:sidebar-state", (_event, value) => stateStore.update(validateSidebarState(value)));
+  handle("launcher:sidebar-state", (_event, value) => updateSharedPreference(validateSidebarState(value)));
   handle("launcher:logs", (_event, limit) => logger.recent(limit));
   handle("launcher:export-logs", async () => {
     const date = new Date().toISOString().slice(0, 10);
@@ -992,12 +1226,44 @@ async function requestQuit() {
   }
   shutdownInProgress = true;
   try {
+    if (hubContexts) {
+      const failures = [];
+      for (const ctx of hubContexts.contexts.values()) {
+        try {
+          if (ctx.routingSwitch.inFlight) await ctx.routingSwitch.inFlight.catch(() => {});
+          await ctx.runtimeSupervisor.cancelActiveTurns().catch(() => {});
+          await ctx.routingSwitch.setEnabled(false, { client: false, restoreBeforeStop: true,
+            refreshBackend: true });
+          ctx.routingSwitch.stopKeeper();
+          await ctx.runtimeSupervisor.shutdown({ cancelActiveTurns: true, force: true });
+        } catch (error) {
+          failures.push(`${ctx.id}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      if (failures.length) throw new Error(`Could not restore every account route: ${failures.join("; ")}`);
+      stopCatalogVerificationMonitor();
+      quitting = true;
+      for (const ctx of hubContexts.contexts.values()) {
+        await ctx.browserHost.persistSession();
+        ctx.browserHost.destroy();
+        ctx.parkingWindow?.destroy();
+        await ctx.browserControl.close();
+      }
+      exitCommitted = true;
+      for (const ctx of hubContexts.contexts.values()) ctx.guard?.release();
+      app.quit();
+      return { ok: true };
+    }
     const activeOperation = runtimeHost?.currentOperation() || browserHost?.currentOperation()
+      || (browserHost?.activeTraceId ? "ChatGPT turn" : null)
       || (routingSwitch?.inFlight ? "routing" : null);
     if (activeOperation) {
       throw new Error(`Wait for ${activeOperation} to finish before quitting Codex Route Hub`);
     }
-    if (routingSwitch) await routingSwitch.setEnabled(false);
+    // An ordinary Route Hub quit restores the route without controlling ChatGPT.app.
+    // Explicit routing controls retain their own stop/reopen lifecycle.
+    if (routingSwitch) await routingSwitch.setEnabled(false, { client: false, restoreBeforeStop: true,
+      refreshBackend: true });
     routingSwitch?.stopKeeper();
     await runtimeSupervisor?.shutdown({ cancelActiveTurns: true, force: true });
     stopCatalogVerificationMonitor();
@@ -1006,6 +1272,7 @@ async function requestQuit() {
     browserHost?.destroy();
     await browserControl?.close();
     exitCommitted = true;
+    routeExitGuard?.release();
     app.quit();
     return { ok: true };
   } catch (error) {
@@ -1025,7 +1292,9 @@ async function start() {
     app.quit();
     return;
   }
-  app.on("second-instance", () => showMainWindow());
+  app.on("second-instance", (_event, commandLine) => {
+    if (!commandLine.includes("--profile-manager-launch")) showMainWindow();
+  });
   app.on("activate", () => showMainWindow());
 
   await waitForPackagedRuntimeSource({ app, resourcesPath: process.resourcesPath });
@@ -1055,7 +1324,23 @@ async function start() {
 
   await app.whenReady();
 
-  const stateStore = createStateStore(path.join(app.getPath("userData"), "launcher-state.json"));
+  const primaryStateStore = createStateStore(path.join(app.getPath("userData"), "launcher-state.json"));
+  sharedLauncherStateStore = primaryStateStore;
+  let selectedStateStore = primaryStateStore;
+  const stateStore = {
+    read: () => selectedStateStore.read(),
+    update: patch => selectedStateStore.update(patch),
+  };
+  const registeredInstances = !IS_DEV_PROFILE && !LAUNCHER_PROFILE.instanceName
+    ? listInstances(instanceRoot()) : [];
+  if (registeredInstances.length > 0) hubContexts = new HubContexts();
+  else accountStore = createAccountStore({
+    userData: launcherUserData,
+    launcherProfile: LAUNCHER_PROFILE.kind,
+    singleAccount: Boolean(LAUNCHER_PROFILE.instanceName),
+    instanceRoot: LAUNCHER_PROFILE.instanceRoot,
+    instanceName: LAUNCHER_PROFILE.instanceName,
+  });
   if (IS_DEV_PROFILE && !stateStore.read().onboardingComplete) {
     stateStore.update({
       language: stateStore.read().language || "en",
@@ -1074,7 +1359,8 @@ async function start() {
       codexRestartRequired: false,
     });
   }
-  const autostart = IS_DEV_PROFILE ? { supported: false, enabled: false } : getAutostart(app);
+  const autostart = IS_DEV_PROFILE || LAUNCHER_PROFILE.instanceName
+    ? { supported: false, enabled: false } : getAutostart(app);
   if (!IS_DEV_PROFILE
     && stateStore.read().onboardingComplete
     && autostart.supported
@@ -1085,7 +1371,46 @@ async function start() {
     filePath: path.join(app.getPath("logs"), "launcher.jsonl"),
     publish: (record) => send("launcher:log", record),
   });
-  const startHidden = process.argv.includes("--hidden") && stateStore.read().onboardingComplete;
+  if (!IS_DEV_PROFILE && !hubContexts) {
+    let guardGeneration = 0;
+    const cliInvocation = runtimeInvocation({
+      app, sourceRoot: SOURCE_ROOT, installedRuntimeRoot: runtimeRootProvider(), args: [],
+    });
+    const guardPath = app.isPackaged
+      ? path.join(process.resourcesPath, "route-exit-guard.cjs")
+      : path.join(__dirname, "route-exit-guard.cjs");
+    const armGuard = async () => {
+      const generation = ++guardGeneration;
+      const guard = await startRouteExitGuard({
+        coreHome: CORE_HOME, codexHome: LAUNCHER_PROFILE.codexHome,
+        ...(process.platform === "darwin" && process.env.CODEX_ROUTE_HUB_TEST_NO_CLIENT_RESTART !== "1" ? {
+          clientAppPath: LAUNCHER_PROFILE.clientAppPath || "/Applications/ChatGPT.app",
+          clientBundleId: LAUNCHER_PROFILE.clientBundleId || "com.openai.codex",
+        } : {}),
+        cliInvocation, guardPath, logger,
+        onUnexpectedExit: () => {
+          if (generation !== guardGeneration || exitCommitted) return;
+          routeExitGuard = null;
+          const retry = () => {
+            if (exitCommitted) return;
+            if (shutdownInProgress) {
+              setTimeout(retry, 1_000).unref?.();
+              return;
+            }
+            void armGuard().catch(error => {
+              logger.error("routing.exit_guard_restart_failed", { message: error.message });
+              setTimeout(retry, 5_000).unref?.();
+            });
+          };
+          setTimeout(retry, 1_000).unref?.();
+        },
+      });
+      routeExitGuard = guard;
+    };
+    await armGuard();
+  }
+  const startHidden = process.argv.includes("--hidden")
+    && (stateStore.read().onboardingComplete || process.argv.includes("--profile-manager-launch"));
   nativeTheme.themeSource = "system";
   mainWindow = createWindow({
     logger,
@@ -1093,12 +1418,252 @@ async function start() {
     windowStatePath: path.join(app.getPath("userData"), "window-state.json"),
     startHidden,
   });
+  const createNamedContext = async (manifest) => {
+    const root = instanceRoot();
+    const paths = instancePaths(root, manifest.name, {
+      multicodexRoot: manifest.multicodexRoot,
+      desktopKind: manifest.desktopKind,
+    });
+    fs.mkdirSync(paths.coreHome, { recursive: true, mode: 0o700 });
+    fs.mkdirSync(paths.userData, { recursive: true, mode: 0o700 });
+    const localStateStore = createStateStore(path.join(paths.userData, "launcher-state.json"));
+    const primary = primaryStateStore.read();
+    localStateStore.update({ language: primary.language, autoStart: primary.autoStart,
+      keepRunningOnClose: primary.keepRunningOnClose,
+      showBrowserDuringTurns: primary.showBrowserDuringTurns,
+      sidebarOpen: primary.sidebarOpen, sidebarWidth: primary.sidebarWidth });
+    if (!localStateStore.read().onboardingComplete && primary.onboardingComplete) {
+      localStateStore.update({
+        onboardingComplete: true,
+        githubOpened: primary.githubOpened,
+        xOpened: primary.xOpened,
+      });
+    }
+    if (localStateStore.read().browserInteractionMode !== "automatic") {
+      localStateStore.update({ browserInteractionMode: "automatic" });
+    }
+    const localAccountStore = createAccountStore({
+      userData: paths.userData, launcherProfile: "production", singleAccount: true,
+      instanceRoot: root, instanceName: manifest.name,
+    });
+    const ctx = {
+      id: manifest.name,
+      profile: { ...paths, kind: "production", instanceName: manifest.name, instanceRoot: root,
+        port: manifest.port, multicodexRoot: manifest.multicodexRoot },
+      partition: partitionForInstance(manifest.name),
+      stateStore: localStateStore,
+      accountStore: localAccountStore,
+      browserHost: null,
+      browserControl: null,
+      runtimeSupervisor: null,
+      runtimeHost: null,
+      routingSwitch: null,
+      guard: null,
+      parkingWindow: null,
+    };
+    const descriptorPath = path.join(paths.coreHome, "runtime", "launcher-browser.json");
+    let lastReportedAuthentication = null;
+    const publishForContext = operation => {
+      if (hubContexts?.activeId === ctx.id) publishOperation(operation);
+    };
+    ctx.browserControl = await new BrowserControlServer({
+      logger,
+      getBrowserHost: () => ctx.browserHost,
+      getPreferences: () => localStateStore.read(),
+      getRouting: () => namedRoutingControl(ctx),
+      resolveProxy: url => session.fromPartition(ctx.partition).resolveProxy(url),
+    }).start();
+    ctx.runtimeSupervisor = new RuntimeSupervisor({
+      app, logger, sourceRoot: SOURCE_ROOT, installedRuntimeRoot, runtimeRootProvider,
+      coreHome: paths.coreHome, codexHome: paths.codexHome,
+      instanceName: manifest.name,
+      browserDescriptorPath: descriptorPath, launcherProfile: "production",
+      publishOperation: publishForContext,
+    });
+    ctx.runtimeHost = new RuntimeHost({
+      app, logger, sourceRoot: SOURCE_ROOT, installedRuntimeRoot, runtimeRootProvider,
+      coreHome: paths.coreHome, codexHome: paths.codexHome, userData: paths.userData,
+      proxyPort: manifest.port, instanceName: manifest.name,
+      browserDescriptorPath: descriptorPath, launcherProfile: "production",
+      publishOperation: publishForContext, supervisor: ctx.runtimeSupervisor,
+      getBrowserInteractionMode: () => localStateStore.read().browserInteractionMode,
+    });
+    ctx.routingSwitch = new RoutingSwitch({
+      host: ctx.runtimeHost, supervisor: ctx.runtimeSupervisor, store: localStateStore, logger,
+      preflight: async () => { await ctx.browserHost.inspectSession(true); },
+      client: process.platform === "darwin"
+        && process.env.CODEX_ROUTE_HUB_TEST_NO_CLIENT_RESTART !== "1"
+        ? new CodexClientLifecycle({
+          appPath: paths.clientAppPath,
+          bundleId: paths.clientBundleId,
+          multicodexRoot: manifest.desktopKind === "official" ? null : manifest.multicodexRoot,
+        }) : null,
+      onClientRestarted: baseline => {
+        if (hubContexts?.activeId === ctx.id) {
+          startCatalogVerificationMonitor({ logger, stateStore: localStateStore,
+            baseline, supervisor: ctx.runtimeSupervisor });
+        }
+      },
+      refreshSession: () => ctx.browserHost.refreshAuthentication(),
+      publishState: state => {
+        if (hubContexts?.activeId === ctx.id) send("launcher:state-changed", state);
+      },
+      publishOperation: publishForContext,
+    });
+    // Each account owns a native window for its browser views even while another account is
+    // selected. Only the selected account lends those same views to the visible Hub shell.
+    const [parkingWidth, parkingHeight] = mainWindow.getContentSize();
+    ctx.parkingWindow = new BaseWindow({
+      width: Math.max(800, parkingWidth), height: Math.max(600, parkingHeight),
+      show: false, skipTaskbar: true, frame: false, focusable: false,
+    });
+    ctx.browserHost = new BrowserHost({
+      window: ctx.parkingWindow, descriptorPath, cdpPort,
+      control: ctx.browserControl.descriptor(),
+      cancelTurn: (traceId, reason) => ctx.runtimeSupervisor.cancelBrowserTurn(traceId, reason),
+      getConnectorName: () => ctx.runtimeHost.browserConnectorName(),
+      helper: { executable: process.execPath, script: BROWSER_HELPER_PATH },
+      logger,
+      loginWithPasskey: () => ctx.runtimeHost.capturePasskeyLogin(),
+      partition: ctx.partition,
+      profile: "production", profileId: profileIdForInstance(manifest.name),
+      instanceName: manifest.name,
+      expectedAccountKey: localAccountStore.active().accountKey,
+      enforceAccountBinding: true,
+      assertTunnelBinding: () => assertActiveTunnelBinding(
+        localAccountStore, "default", ctx.runtimeHost.runtimeConfigSnapshot().config,
+      ),
+      onIdentity: user => {
+        localAccountStore.bindIdentity("default", user);
+        send("launcher:accounts-changed", hubContexts.snapshot());
+      },
+      isActive: () => true,
+      publishState: state => {
+        if (hubContexts?.activeId === ctx.id) send("launcher:browser-state", state);
+        if (lastReportedAuthentication !== state.authenticated) {
+          lastReportedAuthentication = state.authenticated;
+          send("launcher:accounts-changed", hubContexts.snapshot());
+        }
+      },
+      showWindow: () => {
+        if (hubContexts?.activeId === ctx.id) showMainWindow();
+      },
+      getBrowserInteractionMode: () => localStateStore.read().browserInteractionMode,
+    });
+    hubContexts.add(ctx);
+    await ctx.browserHost.ready();
+    ctx.browserHost.hide();
+    ctx.browserHost.setSurfaceActive(false);
+    fs.mkdirSync(path.join(paths.coreHome, "runtime"), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(paths.coreHome, "runtime", "routing-control.json"),
+      JSON.stringify({ protocol: "codex-routing-v1" }), { mode: 0o600 });
+    if (powerMonitor && typeof powerMonitor.on === "function") {
+      for (const event of ["resume", "unlock-screen"]) {
+        powerMonitor.on(event, () => ctx.routingSwitch.onSystemResume({ event }));
+      }
+    }
+    let guardGeneration = 0;
+    const guardPath = app.isPackaged
+      ? path.join(process.resourcesPath, "route-exit-guard.cjs")
+      : path.join(__dirname, "route-exit-guard.cjs");
+    const armGuard = async () => {
+      const generation = ++guardGeneration;
+      const guard = await startRouteExitGuard({
+        coreHome: paths.coreHome, codexHome: paths.codexHome,
+        ...(ctx.routingSwitch.client ? {
+          clientAppPath: paths.clientAppPath,
+          clientBundleId: paths.clientBundleId,
+        } : {}),
+        cliInvocation: runtimeInvocation({
+          app, sourceRoot: SOURCE_ROOT, installedRuntimeRoot: runtimeRootProvider(), args: [],
+        }),
+        guardPath, logger,
+        onUnexpectedExit: () => {
+          if (generation !== guardGeneration || exitCommitted) return;
+          ctx.guard = null;
+          setTimeout(() => {
+            if (!exitCommitted && !shutdownInProgress) {
+              void armGuard().catch(error => logger.error("routing.exit_guard_restart_failed", {
+                instance: ctx.id, message: error.message,
+              }));
+            }
+          }, 1_000).unref?.();
+        },
+      });
+      ctx.guard = guard;
+    };
+    await armGuard();
+    ctx.startupAuthenticationRefresh = process.argv.includes("--launcher-smoke-test")
+      ? Promise.resolve()
+      : ctx.browserHost.refreshAuthentication().catch(error => {
+      logger.warn("browser.session_refresh_failed", {
+        instance: ctx.id, ...navigationErrorForLog(error),
+      });
+      });
+    ctx.routingSwitch.ready = async () => {
+      await ctx.startupAuthenticationRefresh;
+      assertMatchingAccount(paths.codexHome, localAccountStore.active().accountKey, "Desktop Codex");
+    };
+    return ctx;
+  };
+  if (hubContexts) {
+    accountStore = hubContexts;
+    for (const manifest of registeredInstances) await createNamedContext(manifest);
+    const activeInstancePath = path.join(launcherUserData, "active-instance.json");
+    try {
+      const saved = JSON.parse(fs.readFileSync(activeInstancePath, "utf8"));
+      if (saved?.version === 1 && hubContexts.contexts.has(saved.name)) {
+        hubContexts.select(saved.name);
+      }
+    } catch (error) {
+      if (error?.code !== "ENOENT") logger.warn("account.saved_selection_invalid", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    activateNamedContext = id => {
+      const previous = hubContexts.selected();
+      if (previous.id !== id) {
+        const next = hubContexts.get(id);
+        stopCatalogVerificationMonitor();
+        previous.browserHost.hide();
+        previous.browserHost.setSurfaceActive(false);
+        previous.browserHost.attachWindow(previous.parkingWindow);
+        next.browserHost.attachWindow(mainWindow);
+        hubContexts.select(id);
+      } else if (previous.browserHost.window !== mainWindow) {
+        previous.browserHost.attachWindow(mainWindow);
+      }
+      const current = hubContexts.selected();
+      writePrivateFileAtomic(activeInstancePath,
+        `${JSON.stringify({ version: 1, name: current.id })}\n`);
+      selectedStateStore = current.stateStore;
+      browserHost = current.browserHost;
+      browserControl = current.browserControl;
+      runtimeSupervisor = current.runtimeSupervisor;
+      runtimeHost = current.runtimeHost;
+      routingSwitch = current.routingSwitch;
+      lastOperation = null;
+      send("launcher:accounts-changed", hubContexts.snapshot());
+      send("launcher:state-changed", current.stateStore.read());
+      send("launcher:browser-state", current.browserHost.snapshot());
+      return hubContexts.snapshot();
+    };
+    activateNamedContext(hubContexts.activeId);
+    addNamedContext = async name => {
+      const manifest = readInstance(instanceRoot(), name);
+      const ctx = await createNamedContext(manifest);
+      ctx.routingSwitch.startup().catch(error => logger.error("runtime.startup_failed", {
+        instance: ctx.id, message: error.message,
+      }));
+      return activateNamedContext(name);
+    };
+  } else {
   browserControl = await new BrowserControlServer({
     logger,
     getBrowserHost: () => browserHost,
     getPreferences: () => stateStore.read(),
     getRouting: () => routingSwitch,
-    resolveProxy: url => session.fromPartition(LAUNCHER_PROFILE.browserPartition).resolveProxy(url),
+    resolveProxy: url => session.fromPartition(accountStore.partition(accountStore.active().id)).resolveProxy(url),
   }).start();
   runtimeSupervisor = new RuntimeSupervisor({
     app,
@@ -1120,6 +1685,8 @@ async function start() {
     browserDescriptorPath: BROWSER_DESCRIPTOR_PATH,
     coreHome: CORE_HOME,
     codexHome: LAUNCHER_PROFILE.codexHome,
+    proxyPort: LAUNCHER_PROFILE.port ?? null,
+    instanceName: LAUNCHER_PROFILE.instanceName ?? null,
     launcherProfile: LAUNCHER_PROFILE.kind,
     publishOperation,
     supervisor: runtimeSupervisor,
@@ -1133,7 +1700,11 @@ async function start() {
     client: process.platform === "darwin"
       && !(process.env.CODEX_ROUTE_HUB_TEST_NO_CLIENT_RESTART === "1"
         && LAUNCHER_PROFILE.codexHome !== path.join(require("node:os").homedir(), ".codex"))
-      ? new CodexClientLifecycle() : null,
+      ? new CodexClientLifecycle({
+        appPath: LAUNCHER_PROFILE.clientAppPath,
+        bundleId: LAUNCHER_PROFILE.clientBundleId,
+        multicodexRoot: LAUNCHER_PROFILE.multicodexRoot,
+      }) : null,
     // A controlled Codex restart resets catalog evidence: only a request newer than this
     // baseline proves the reopened client reads models through the proxy.
     onClientRestarted: baseline => startCatalogVerificationMonitor({ logger, stateStore, baseline }),
@@ -1162,7 +1733,7 @@ async function start() {
     && stateStore.read().browserInteractionMode !== configuredInteractionMode) {
     stateStore.update({ browserInteractionMode: configuredInteractionMode });
   }
-  browserHost = new BrowserHost({
+  createAccountBrowserHost = profileId => new BrowserHost({
     window: mainWindow,
     descriptorPath: BROWSER_DESCRIPTOR_PATH,
     cdpPort,
@@ -1172,13 +1743,29 @@ async function start() {
     helper: { executable: process.execPath, script: BROWSER_HELPER_PATH },
     logger,
     loginWithPasskey: () => runtimeHost.capturePasskeyLogin(),
-    partition: LAUNCHER_PROFILE.browserPartition,
+    partition: accountStore.partition(profileId),
     profile: LAUNCHER_PROFILE.kind,
-    publishState: (state) => send("launcher:browser-state", state),
+    profileId,
+    instanceName: LAUNCHER_PROFILE.instanceName ?? null,
+    expectedAccountKey: accountStore.profile(profileId).accountKey,
+    enforceAccountBinding: !IS_DEV_PROFILE,
+    assertTunnelBinding: () => assertActiveTunnelBinding(
+      accountStore, profileId, runtimeHost.runtimeConfigSnapshot().config,
+    ),
+    onIdentity: user => {
+      accountStore.bindIdentity(profileId, user);
+      send("launcher:accounts-changed", accountStore.snapshot());
+    },
+    isActive: () => accountStore.active().id === profileId,
+    publishState: state => {
+      if (accountStore.active().id === profileId) send("launcher:browser-state", state);
+    },
     showWindow: showMainWindow,
     getBrowserInteractionMode: () => stateStore.read().browserInteractionMode,
   });
+  browserHost = createAccountBrowserHost(accountStore.active().id);
   await browserHost.ready();
+  }
   const updaterRuntimeRoot = runtimeRootProvider();
   updateController = createUpdateController({
     currentVersion: app.getVersion(),
@@ -1198,7 +1785,9 @@ async function start() {
   if (startHidden && !trayAvailable) mainWindow.once("ready-to-show", () => showMainWindow());
   const launcherSmokeTest = process.argv.includes("--launcher-smoke-test");
   let startupAuthenticationRefresh = Promise.resolve();
-  if (!launcherSmokeTest && stateStore.read().browserInteractionMode === "automatic") {
+  if (hubContexts) {
+    startupAuthenticationRefresh = hubContexts.selected().startupAuthenticationRefresh;
+  } else if (!launcherSmokeTest && stateStore.read().browserInteractionMode === "automatic") {
     startupAuthenticationRefresh = browserHost.refreshAuthentication().catch((error) => {
       logger.warn("browser.session_refresh_failed", {
         ...navigationErrorForLog(error),
@@ -1239,8 +1828,17 @@ async function start() {
       packaged: app.isPackaged,
       runtimeVerified: true,
     })}\n`);
-    browserHost.destroy();
-    await browserControl.close();
+    if (hubContexts) {
+      for (const ctx of hubContexts.contexts.values()) {
+        ctx.browserHost.destroy();
+        ctx.parkingWindow?.destroy();
+        await ctx.browserControl.close();
+        ctx.guard?.release();
+      }
+    } else {
+      browserHost.destroy();
+      await browserControl.close();
+    }
     mainWindow.destroy();
     app.quit();
     return;
@@ -1280,8 +1878,26 @@ async function start() {
         send("launcher:state-changed", failed);
       });
     }
+  } else if (hubContexts) {
+    for (const ctx of hubContexts.contexts.values()) {
+      void ctx.routingSwitch.startup().catch(error => {
+        logger.error("runtime.startup_failed", { instance: ctx.id, message: error.message });
+      });
+    }
   } else {
-    routingSwitch.ready = () => startupAuthenticationRefresh;
+    routingSwitch.ready = async () => {
+      await startupAuthenticationRefresh;
+      if (LAUNCHER_PROFILE.instanceName) {
+        if (stateStore.read().browserInteractionMode !== "automatic") {
+          throw new Error("Named account instances require Automatic browser interaction");
+        }
+        assertMatchingAccount(
+          LAUNCHER_PROFILE.codexHome,
+          accountStore.active().accountKey,
+          "Desktop Codex",
+        );
+      }
+    };
     // Startup reconciles the saved intent: on keeps or re-establishes the route (restarting
     // Codex only when the route changes), off finishes any interrupted restore. Catalog
     // evidence is observed by the routing keeper and the restart hook above.
@@ -1309,9 +1925,18 @@ void start().catch(async (error) => {
     // Browser bootstrap can fail before the renderer is loaded. Keep the error reachable
     // through the existing instance, and release browser resources before a user retry.
     const cleanupErrors = [];
-    try { browserHost?.destroy(); } catch (caught) { cleanupErrors.push(String(caught)); }
-    try { await browserControl?.close(); } catch (caught) { cleanupErrors.push(String(caught)); }
-    if (process.argv.includes("--launcher-smoke-test")) return;
+    if (hubContexts) {
+      for (const ctx of hubContexts.contexts.values()) {
+        try { ctx.browserHost?.destroy(); } catch (caught) { cleanupErrors.push(String(caught)); }
+        try { ctx.parkingWindow?.destroy(); } catch (caught) { cleanupErrors.push(String(caught)); }
+        try { await ctx.browserControl?.close(); } catch (caught) { cleanupErrors.push(String(caught)); }
+      }
+    } else {
+      try { browserHost?.destroy(); } catch (caught) { cleanupErrors.push(String(caught)); }
+      try { await browserControl?.close(); } catch (caught) { cleanupErrors.push(String(caught)); }
+    }
+    if (process.argv.includes("--launcher-smoke-test")
+      || process.argv.includes("--profile-manager-launch")) return;
     await app.whenReady();
     quitting = true;
     showMainWindow();

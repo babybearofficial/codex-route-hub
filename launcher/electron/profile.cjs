@@ -1,5 +1,6 @@
 const os = require("node:os");
 const path = require("node:path");
+const { resolveNamedInstance } = require("./named-instance.cjs");
 
 const PRODUCTION_PROFILE = "production";
 const DEVELOPMENT_PROFILE = "development";
@@ -23,6 +24,24 @@ function resolveLauncherProfile({
   }
   const development = argv.includes("--dev-profile");
   if (!development) {
+    const named = resolveNamedInstance({ env, homeDir });
+    if (named) {
+      return {
+        kind: PRODUCTION_PROFILE,
+        displayName: `Codex Route Hub · ${named.name}`,
+        instanceName: named.name,
+        instanceRoot: named.root,
+        multicodexRoot: named.multicodexRoot,
+        desktopKind: named.desktopKind,
+        port: named.port,
+        coreHome: named.coreHome,
+        codexHome: named.codexHome,
+        userData: named.userData,
+        clientAppPath: named.clientAppPath,
+        clientBundleId: named.clientBundleId,
+        browserPartition: "persist:codex-web-gpt-chatgpt",
+      };
+    }
     const coreHome = env.CODEX_CHATGPT_WEB_HOME?.trim()
       ? resolveUserPath(env.CODEX_CHATGPT_WEB_HOME.trim(), homeDir)
       : path.join(homeDir, ".codex-chatgpt-web");
