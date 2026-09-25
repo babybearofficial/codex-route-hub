@@ -29,9 +29,11 @@ if (target !== nativeTarget) {
 
 const env = { ...process.env };
 if (!env.CSC_LINK && !env.CSC_NAME) env.CSC_IDENTITY_AUTO_DISCOVERY = "false";
+const macZipOnly = target === "--mac" && env.CODEX_ROUTE_HUB_MAC_ZIP_ONLY === "1";
 const builderArgs = [
   electronBuilderCli,
   target,
+  ...(macZipOnly ? ["zip"] : []),
   "--publish",
   "never",
 ];
@@ -40,7 +42,11 @@ if (target === "--mac" && !env.CSC_LINK && !env.CSC_NAME) {
 }
 
 const staging = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-package-"));
-const artifactsDirectory = path.join(root, "artifacts");
+const configuredArtifacts = process.env.CODEX_ROUTE_HUB_ARTIFACTS_DIR?.trim();
+if (configuredArtifacts && !path.isAbsolute(configuredArtifacts)) {
+  throw new Error("CODEX_ROUTE_HUB_ARTIFACTS_DIR must be absolute");
+}
+const artifactsDirectory = configuredArtifacts || path.join(root, "artifacts");
 
 function runChecked(command, args) {
   const result = spawnSync(command, args, {
@@ -87,12 +93,13 @@ try {
     shell: false,
   });
   if (result.error) throw result.error;
-  if (result.status !== 0) process.exit(result.status ?? 1);
+  if (result.status !== 0) throw new Error(`electron-builder failed with status ${result.status ?? "unknown"}`);
   if (target === "--mac") verifySignedMacArchive();
 
   fs.mkdirSync(artifactsDirectory, { recursive: true });
   for (const entry of fs.readdirSync(artifactsDirectory, { withFileTypes: true })) {
-    if (entry.isFile() && /\.(?:AppImage|dmg|exe|zip|blockmap)$/i.test(entry.name)) {
+    if (entry.isFile() && entry.name.startsWith("codex-route-hub-")
+      && /\.(?:AppImage|dmg|exe|zip|blockmap)$/i.test(entry.name)) {
       fs.rmSync(path.join(artifactsDirectory, entry.name), { force: true });
     }
   }

@@ -24,6 +24,7 @@ import { readJsonRequestBody } from "./http-body";
 import { httpStatusFromTerminalError } from "./lib/errors";
 import { createHash } from "node:crypto";
 import { augmentNativeModelCatalog } from "./model-catalog";
+import { namedAccountIdentityReady } from "./named-account-guard";
 import {
   readCodexModelContextOverride,
   readCodexSubagentProtocol,
@@ -838,6 +839,7 @@ export function startServer(
           port: config.port,
           uptime: (Date.now() - startedAt) / 1_000,
           accepting_turns: !draining,
+          account_identity_ready: namedAccountIdentityReady(),
           successful_model_catalog_requests: successfulModelCatalogRequests,
           last_successful_model_catalog_request_at: lastSuccessfulModelCatalogRequestAt,
           model_catalog_requests: modelCatalogRequests,
@@ -982,6 +984,10 @@ export function startServer(
         }
         setTimeout(shutdown, 0);
         return Response.json({ status: "ok", accepting_turns: false, ...current });
+      }
+      if (url.pathname.startsWith("/v1/") && !namedAccountIdentityReady()) {
+        return formatErrorResponse(409, "invalid_request_error",
+          "This Route Hub instance's desktop login no longer matches its ChatGPT Web account");
       }
       if (req.method === "GET" && url.pathname === "/v1/models") {
         if (draining) {

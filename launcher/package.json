@@ -62,6 +62,18 @@
       {
         "from": "build/runtime",
         "to": "runtime"
+      },
+      {
+        "from": "build/guard/route-exit-guard.cjs",
+        "to": "route-exit-guard.cjs"
+      },
+      {
+        "from": "build/guard/codex-backend-refresh.cjs",
+        "to": "codex-backend-refresh.cjs"
+      },
+      {
+        "from": "build/profile-manager",
+        "to": "profile-manager"
       }
     ],
     "mac": {

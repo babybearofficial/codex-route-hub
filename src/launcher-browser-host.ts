@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
 import { expandUserPath } from "./config";
@@ -78,7 +79,7 @@ function assertLoopbackEndpoint(value: unknown, label: string): string {
   return parsed.origin;
 }
 
-function assertDescriptorShape(value: unknown): LauncherBrowserHostDescriptor {
+function assertDescriptorShape(value: unknown, environment: NodeJS.ProcessEnv): LauncherBrowserHostDescriptor {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Launcher browser descriptor is not an object");
   }
@@ -111,9 +112,18 @@ function assertDescriptorShape(value: unknown): LauncherBrowserHostDescriptor {
   if (!helperScript || !existsSync(helperScript)) {
     throw new Error("Launcher browser descriptor helper script does not exist");
   }
-  const expectedPartition = descriptor.profile === "development"
+  const instanceName = environment.CODEX_ROUTE_HUB_INSTANCE?.trim();
+  if (instanceName && (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(instanceName)
+    || descriptor.profile !== "production")) {
+    throw new Error("Launcher browser descriptor has an invalid named instance");
+  }
+  const basePartition = descriptor.profile === "development"
     ? "persist:codex-web-gpt-dev-chatgpt"
     : "persist:codex-web-gpt-chatgpt";
+  const expectedPartition = instanceName
+    ? `${basePartition}-account-${createHash("sha256")
+      .update(`route-hub-instance:${instanceName}`).digest("hex").slice(0, 32)}`
+    : basePartition;
   if (descriptor.partition !== expectedPartition) {
     throw new Error("Launcher browser descriptor identifies an unexpected browser partition");
   }
@@ -149,7 +159,10 @@ function assertDescriptorShape(value: unknown): LauncherBrowserHostDescriptor {
   };
 }
 
-export function readLauncherBrowserHostDescriptor(configuredPath: string): LauncherBrowserHostDescriptor {
+export function readLauncherBrowserHostDescriptor(
+  configuredPath: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): LauncherBrowserHostDescriptor {
   const path = resolve(expandUserPath(configuredPath));
   if (!existsSync(path)) throw new Error(`Launcher browser host is unavailable: descriptor is missing at ${path}`);
   const stat = statSync(path);
@@ -166,7 +179,7 @@ export function readLauncherBrowserHostDescriptor(configuredPath: string): Launc
   catch (error) {
     throw new Error(`Launcher browser descriptor is invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const descriptor = assertDescriptorShape(decoded);
+  const descriptor = assertDescriptorShape(decoded, environment);
   if (!processRunning(descriptor.pid)) {
     throw new Error(`Launcher browser host process is not running (pid ${descriptor.pid})`);
   }

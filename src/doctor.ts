@@ -157,7 +157,10 @@ export async function runDoctor(): Promise<DoctorReport> {
     checks.push({ id: "codex", status: "ok", message: "Codex native model route is installed" });
   }
 
-  const service = getServiceStatus();
+  const namedLauncher = config.browserHost === "launcher" && Boolean(process.env.CODEX_ROUTE_HUB_INSTANCE?.trim());
+  const service = namedLauncher
+    ? { supported: true, installed: false, loaded: false }
+    : getServiceStatus();
   if (config.browserHost === "launcher") {
     checks.push(service.installed || service.loaded
       ? {
@@ -190,7 +193,9 @@ export async function runDoctor(): Promise<DoctorReport> {
     } else {
       checks.push({ id: "tunnel-key", status: "ok", message: "Tunnel runtime key is stored privately" });
     }
-    const tunnelService = getTunnelServiceStatus();
+    const tunnelService = namedLauncher
+      ? { supported: true, installed: false, loaded: false, running: false }
+      : getTunnelServiceStatus();
     if (config.browserHost === "launcher") {
       checks.push(tunnelService.installed || tunnelService.loaded
         ? {

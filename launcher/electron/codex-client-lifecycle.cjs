@@ -1,14 +1,23 @@
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const path = require('node:path');
+const { refreshCodexBackend } = require('./codex-backend-refresh.cjs');
 
 const execute = promisify(execFile);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 class CodexClientLifecycle {
-  constructor({ appPath = '/Applications/ChatGPT.app', run = execute, pause = sleep, now = Date.now } = {}) {
+  constructor({ appPath = '/Applications/ChatGPT.app', bundleId = 'com.openai.codex',
+    multicodexRoot = null,
+    run = execute, pause = sleep, now = Date.now } = {}) {
     if (!path.isAbsolute(appPath)) throw new Error('Codex client application path must be absolute');
-    Object.assign(this, { appPath, run, pause, now });
+    if (typeof bundleId !== 'string' || !/^[A-Za-z0-9._-]+$/.test(bundleId)) {
+      throw new Error('Codex client bundle ID is invalid');
+    }
+    if (multicodexRoot !== null && !path.isAbsolute(multicodexRoot)) {
+      throw new Error('MultiCodex profile root must be absolute');
+    }
+    Object.assign(this, { appPath, bundleId, multicodexRoot, run, pause, now });
     this.previous = null;
   }
 
@@ -17,11 +26,12 @@ class CodexClientLifecycle {
     // NSRunningApplication termination is graceful and never force-kills helpers.
     const script = `ObjC.import('AppKit'); ObjC.import('Foundation');
       const target=${JSON.stringify(this.appPath)};
+      const expectedBundleId=${JSON.stringify(this.bundleId)};
       const bundle=$.NSBundle.bundleWithPath(target);
-      if(!bundle || ObjC.unwrap(bundle.bundleIdentifier)!=='com.openai.codex') throw new Error('Selected application is not the Codex client');
+      if(!bundle || ObjC.unwrap(bundle.bundleIdentifier)!==expectedBundleId) throw new Error('Selected application is not the expected Codex client');
       const apps=$.NSWorkspace.sharedWorkspace.runningApplications; let found=null;
       for(let i=0;i<apps.count;i++){const a=apps.objectAtIndex(i);
-        if(ObjC.unwrap(a.bundleIdentifier)==='com.openai.codex' && ObjC.unwrap(a.bundleURL.path)===target){
+        if(ObjC.unwrap(a.bundleIdentifier)===expectedBundleId && ObjC.unwrap(a.bundleURL.path)===target){
           found={pid:Number(a.processIdentifier)};
           if(${terminate}) found.accepted=Boolean(a.terminate);
           break;
@@ -34,6 +44,11 @@ class CodexClientLifecycle {
 
   async running() {
     return Boolean(await this.inspect());
+  }
+
+  async refreshBackend() {
+    return refreshCodexBackend({ appPath: this.appPath, bundleId: this.bundleId,
+      run: this.run, wait: this.pause, now: this.now });
   }
 
   // Resolves to { wasRunning } once the exact client is gone. A declined quit or a quit that
@@ -57,7 +72,11 @@ class CodexClientLifecycle {
   async reopen({ recovery = false, ifPrevious = recovery } = {}) {
     if (ifPrevious && !this.previous) return { reopened: false };
     // open -g preserves focus. Wait for actual process readback, not just exit 0.
-    await this.run('/usr/bin/open', ['-g', '-a', this.appPath], { timeout: 15_000, maxBuffer: 64 * 1024 });
+    await this.run('/usr/bin/open', [
+      '-g', ...(this.bundleId === 'com.openai.codex' ? [] : ['-n']),
+      ...(this.multicodexRoot ? ['--env', `MULTICODEX_ROOT=${this.multicodexRoot}`] : []),
+      '-a', this.appPath,
+    ], { timeout: 15_000, maxBuffer: 64 * 1024 });
     const deadline = this.now() + 20_000;
     while (!await this.inspect()) {
       if (this.now() >= deadline) throw new Error('Codex launch was requested but its process did not appear');

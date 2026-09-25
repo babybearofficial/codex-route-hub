@@ -47,7 +47,8 @@ async function stopChild(child) {
   }
 }
 
-async function runBrowserHelperOperation({ helper, descriptorPath, appName, operation, payload = {}, logger }) {
+async function runBrowserHelperOperation({ helper, descriptorPath, appName, operation,
+  payload = {}, logger, instanceName = null }) {
   if (!helper || typeof helper.executable !== "string" || typeof helper.script !== "string") {
     throw new Error("Browser helper verification command is invalid");
   }
@@ -57,13 +58,20 @@ async function runBrowserHelperOperation({ helper, descriptorPath, appName, oper
   if (!["verify", "inspect", "smoke"].includes(operation)) {
     throw new Error(`Unsupported browser helper operation: ${String(operation)}`);
   }
+  if (instanceName !== null
+    && (typeof instanceName !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(instanceName))) {
+    throw new Error("Browser helper instance name is invalid");
+  }
   const id = `${operation}-${randomBytes(12).toString("hex")}`;
+  const environment = {
+    ...process.env,
+    ELECTRON_RUN_AS_NODE: "1",
+    CODEX_CHATGPT_WEB_BROWSER_HELPER_PROCESS: "1",
+  };
+  if (instanceName) environment.CODEX_ROUTE_HUB_INSTANCE = instanceName;
+  else delete environment.CODEX_ROUTE_HUB_INSTANCE;
   const child = spawn(helper.executable, [helper.script], {
-    env: {
-      ...process.env,
-      ELECTRON_RUN_AS_NODE: "1",
-      CODEX_CHATGPT_WEB_BROWSER_HELPER_PROCESS: "1",
-    },
+    env: environment,
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });

@@ -361,6 +361,19 @@ code {
   line-height: 16px;
 }
 
+.sidebar-accounts { margin: 0 4px 8px; padding: 5px; border-radius: var(--radius-sm); background: var(--color-background-control-hover); }
+.sidebar-accounts-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 5px 3px; color: var(--color-text-tertiary); font-size: 11px; }
+.sidebar-accounts-heading button { width: 24px; height: 24px; border: 0; border-radius: 6px; background: transparent; color: var(--color-text-secondary); font-size: 19px; cursor: pointer; }
+.sidebar-accounts-heading button:hover { background: var(--color-background-control-active); color: var(--color-text-primary); }
+.sidebar-accounts-heading button:disabled { opacity: .45; cursor: default; }
+.sidebar-account { display: flex; align-items: center; gap: 7px; width: 100%; min-height: 32px; padding: 3px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--color-text-secondary); text-align: left; cursor: pointer; }
+.sidebar-account:hover, .sidebar-account.is-active { background: var(--color-background-control-active); color: var(--color-text-primary); }
+.sidebar-account:disabled { cursor: default; opacity: .6; }
+.sidebar-account-indicator { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--color-text-tertiary); }
+.sidebar-account.is-active .sidebar-account-indicator { background: var(--blue-300); }
+.sidebar-account-label { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; }
+.sidebar-account small { flex: 0 0 auto; color: var(--color-text-tertiary); font-size: 10px; }
+
 .sidebar-item {
   display: flex;
   width: 100%;
@@ -1582,6 +1595,28 @@ code {
   gap: 14px;
 }
 
+.mcp-account-status {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 10px 0 18px;
+  padding: 12px 16px;
+  border: 1px solid rgba(119, 157, 255, 0.35);
+  border-radius: 10px;
+  background: rgba(75, 111, 194, 0.1);
+}
+
+.mcp-account-status strong {
+  color: var(--color-text-primary);
+  font-size: 13px;
+}
+
+.mcp-account-status span {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .wizard-content {
   width: 100%;
   min-width: 0;
@@ -2712,9 +2747,20 @@ code {
 .routing-cards p, .routing-note { font-size: 13px; opacity: .75; }
 .routing-actions { display: grid; gap: 12px; }
 .routing-actions button { width: 100%; min-height: 48px; }
+.routing-account-picker { border: 1px solid var(--color-border, #555); border-radius: 12px; margin: 0 0 20px; padding: 16px; min-width: 0; }
+.routing-account-picker legend { padding: 0 6px; font-weight: 650; }
+.routing-account-select-all, .routing-account-row { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.routing-account-select-all { padding: 2px 4px 12px; font-weight: 600; }
+.routing-account-list { display: grid; gap: 6px; }
+.routing-account-row { padding: 10px 12px; border-radius: 8px; background: var(--color-background-control-hover); }
+.routing-account-row input, .routing-account-select-all input { flex: none; }
+.routing-account-name { min-width: 0; overflow-wrap: anywhere; }
+.routing-account-row small { margin-left: auto; color: var(--color-text-secondary); text-align: right; }
+.routing-batch-result { border: 1px solid var(--color-border, #555); border-radius: 10px; padding: 8px 14px; margin: 12px 0; }
+.routing-batch-result p { margin: 6px 0; overflow-wrap: anywhere; }
 .routing-refresh { display: flex; align-items: center; gap: 24px; margin: 24px 0 12px; }
 .routing-refresh label { display: flex; align-items: center; gap: 8px; }
 .routing-error { color: #ef827c; overflow-wrap: anywhere; }
 .routing-log { height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; border: 1px solid var(--color-border, #555); border-radius: 12px; font-size: 12px; }
 @media (max-width: 960px) { .routing-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 720px) { .routing-cards { grid-template-columns: 1fr; } }
+@media (max-width: 720px) { .routing-cards { grid-template-columns: 1fr; } .routing-account-row { align-items: flex-start; flex-wrap: wrap; } .routing-account-row small { margin-left: 28px; width: 100%; text-align: left; } }

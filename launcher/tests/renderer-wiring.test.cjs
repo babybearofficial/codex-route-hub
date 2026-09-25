@@ -61,9 +61,11 @@ test("a foreground launch request survives hidden startup until the launcher win
     /mainWindowReadyToShow = true;[\s\S]*?if \(mainWindowShowRequested\) showMainWindow\(\);/,
   );
 
-  const secondInstance = electronMain.indexOf('app.on("second-instance", () => showMainWindow())');
+  const secondInstance = electronMain.indexOf('app.on("second-instance", (_event, commandLine) => {');
   const runtimeMaterialization = electronMain.indexOf("await waitForPackagedRuntimeSource", secondInstance);
   assert.ok(secondInstance >= 0, "the second-instance foreground request must be registered");
+  assert.match(electronMain.slice(secondInstance, runtimeMaterialization),
+    /if \(!commandLine\.includes\("--profile-manager-launch"\)\) showMainWindow\(\)/);
   assert.ok(
     runtimeMaterialization > secondInstance,
     "the foreground request must be registered before packaged-runtime startup can block window creation",
@@ -126,7 +128,7 @@ test("startup failure stays visible on another launch and Retry exits the failed
     show: () => { visible = true; }, focus() {}, };
   const sandbox = {
     mainWindow: window, mainWindowReadyToShow: false, mainWindowShowRequested: false,
-    startupFailed: false, quitting: false,
+    startupFailed: false, quitting: false, hubContexts: null,
     browserHost: { destroy: () => events.push("destroy") },
     browserControl: { close: async () => events.push("control closed") },
     start: async () => { throw new Error("Browser idle document did not commit within 10000ms"); },
@@ -247,7 +249,7 @@ test("Zero Risk setup commits state after the runtime transaction and preserves 
     electronMain.indexOf('handle("launcher:setup-mcp"'),
     electronMain.indexOf('handle("launcher:set-mcp-step"'),
   );
-  const runtimeMcpCommit = mcpSetupHandler.indexOf("const runSetup = afterRuntimeReady => setup({");
+  const runtimeMcpCommit = mcpSetupHandler.indexOf("const runSetup = async afterRuntimeReady => {");
   const mcpTransaction = mcpSetupHandler.indexOf("browserHost.withInteractionModeChange(interactionMode, runSetup)");
   const stateMcpCommit = mcpSetupHandler.indexOf("const state = stateStore.update({");
   assert.ok(runtimeMcpCommit >= 0 && runtimeMcpCommit < mcpTransaction);
@@ -328,7 +330,7 @@ test("MCP verification proves runtime health before checking the connector", () 
 
 test("saved ChatGPT authentication is refreshed before setup is presented", () => {
   assert.match(electronMain, /browserHost\.refreshAuthentication\(\)/);
-  assert.match(electronMain, /routingSwitch.ready = \(\) => startupAuthenticationRefresh/);
+  assert.match(electronMain, /routingSwitch\.ready = async \(\) => \{\s*await startupAuthenticationRefresh;[\s\S]*?assertMatchingAccount\(/);
   assert.match(electronMain, /routingSwitch.startup\(\)/);
   const routingSource = fs.readFileSync(path.join(launcherRoot, "electron", "routing-switch.cjs"), "utf8");
   const refreshBarrier = routingSource.indexOf("await this.ready()");
@@ -357,7 +359,8 @@ test("routing sync and wake handling are wired from the startup surface to the r
   // Startup re-verification and Codex restart evidence flow through the switch, not a UI refresh.
   assert.match(electronMain, /onClientRestarted: baseline => startCatalogVerificationMonitor\(\{ logger, stateStore, baseline \}\)/);
   assert.match(electronMain, /for \(const event of \["resume", "unlock-screen"\]\)[\s\S]*?powerMonitor\.on\(event[\s\S]*?routingSwitch\.onSystemResume\(\{ event \}\)/);
-  assert.match(electronMain, /if \(routingSwitch\) await routingSwitch\.setEnabled\(false\);\s*routingSwitch\?\.stopKeeper\(\);/);
+  assert.match(electronMain, /if \(routingSwitch\) await routingSwitch\.setEnabled\(false, \{ client: false, restoreBeforeStop: true,\s*refreshBackend: true \}\);\s*routingSwitch\?\.stopKeeper\(\);/);
+  assert.match(electronMain, /startRouteExitGuard\(\{/);
   assert.doesNotMatch(electronMain, /startCatalogVerificationMonitor\(\{ logger, stateStore \}\);\s*\}\)\.catch/);
 });
 
