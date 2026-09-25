@@ -2,17 +2,17 @@
 set -eu
 
 if [ "$#" -lt 1 ]; then
-  echo "Codex Web GPT AppImage runner requires an AppImage path" >&2
+  echo "Codex Route Hub AppImage runner requires an AppImage path" >&2
   exit 64
 fi
 APPIMAGE_PATH="$1"
 shift
 case "$APPIMAGE_PATH" in
   /*) ;;
-  *) echo "Codex Web GPT AppImage path must be absolute" >&2; exit 64 ;;
+  *) echo "Codex Route Hub AppImage path must be absolute" >&2; exit 64 ;;
 esac
 if [ ! -f "$APPIMAGE_PATH" ] || [ ! -x "$APPIMAGE_PATH" ]; then
-  echo "Codex Web GPT AppImage is unavailable: $APPIMAGE_PATH" >&2
+  echo "Codex Route Hub AppImage is unavailable: $APPIMAGE_PATH" >&2
   exit 66
 fi
 
@@ -38,7 +38,7 @@ case "$RUNTIME_PARENT" in
   /*) ;;
   *) echo "AppImage fallback runtime directory must be absolute" >&2; exit 65 ;;
 esac
-FALLBACK_ROOT="$RUNTIME_PARENT/codex-web-gpt-appimage-$(id -u)"
+FALLBACK_ROOT="$RUNTIME_PARENT/codex-route-hub-appimage-$(id -u)"
 umask 077
 if [ -L "$FALLBACK_ROOT" ]; then
   echo "AppImage fallback root must not be a symbolic link" >&2
@@ -97,7 +97,7 @@ mkdir "$RUN_DIR/unpack"
 )
 APP_DIR="$RUN_DIR/unpack/squashfs-root"
 if [ ! -x "$APP_DIR/AppRun" ]; then
-  echo "Codex Web GPT AppImage fallback extraction produced no executable AppRun" >&2
+  echo "Codex Route Hub AppImage fallback extraction produced no executable AppRun" >&2
   exit 70
 fi
 
