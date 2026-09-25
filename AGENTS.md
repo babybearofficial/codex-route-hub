@@ -1,5 +1,8 @@
 # Codex Route Hub
 
+- Canonical checkout: `/Users/wickedmc/all_codes/codex-route-hub`, an independent Git repository. Do not implement or build this project from the legacy `codex-chatgpt-web` checkout or its worktrees.
+- Desktop account isolation: resolve both the Codex home and desktop browser data directory from the selected application. Never inherit another profile's identity at launch, and never repair an account mismatch by copying another account's credentials.
+
 - This independent project integrates `codex_routing` into the native launcher. Keep runtime ownership in the launcher; Python is a compatibility client.
 - Implement code first, then test. Do not compile/build/package Node.js, TypeScript or Rust without explicit user permission. Direct `.cjs` Node tests and Python tests are allowed; never invoke build hooks implicitly.
 - The user has authorized a controlled Codex restart in the activation pipeline. Complete implementation and isolated verification before any live-session restart. The user verified the restart target as /Applications/ChatGPT.app, whose bundle ID is com.openai.codex. Match this exact path and bundle identity; never kill helpers or other applications. Never take desktop focus intentionally.
