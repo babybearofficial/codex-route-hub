@@ -7,7 +7,15 @@ import {
   CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR,
   activateChatGptEffortMenu,
   detectChatGptAccountCapabilities,
+  isChatGptSignInPage,
 } from "../src/chatgpt-session";
+
+test("sign-in redirects are distinct from a loaded Temporary Chat surface", () => {
+  expect(isChatGptSignInPage("https://chatgpt.com/auth/login?next=%2F")).toBe(true);
+  expect(isChatGptSignInPage("https://auth.openai.com/authorize")).toBe(true);
+  expect(isChatGptSignInPage("https://chatgpt.com/?temporary-chat=true")).toBe(false);
+  expect(isChatGptSignInPage("https://example.com/auth/login")).toBe(false);
+});
 
 test("composer and effort selectors exclude unrelated editable fields and menu buttons", () => {
   const { createDocument } = require("@mixmark-io/domino") as { createDocument(html: string): Document };

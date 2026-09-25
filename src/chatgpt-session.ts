@@ -2,6 +2,18 @@ import type { Locator, Page } from "playwright-core";
 import type { ChatGptWebAccountCapabilities } from "./chatgpt-web-models";
 
 export const CHATGPT_TEMPORARY_CHAT_URL = "https://chatgpt.com/?temporary-chat=true";
+export const CHATGPT_SIGN_IN_REQUIRED_MESSAGE = "ChatGPT sign-in has expired. Open Codex Route Hub > Browser, sign in, then retry the session check.";
+
+export function isChatGptSignInPage(rawUrl: string): boolean {
+  try {
+    const url = new URL(rawUrl);
+    return (url.origin === "https://chatgpt.com" && /^\/auth(?:\/|$)/.test(url.pathname))
+      || ["auth.openai.com", "auth0.openai.com", "login.openai.com"].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 export const CHATGPT_COMPOSER_SELECTOR = [
   '[data-testid="prompt-textarea"]',
   "#prompt-textarea",

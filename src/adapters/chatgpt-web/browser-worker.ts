@@ -52,12 +52,14 @@ import {
   CHATGPT_ASSISTANT_TURN_SELECTOR,
   CHATGPT_COMPLETION_ACTION_SELECTOR,
   CHATGPT_COMPOSER_SELECTOR,
+  CHATGPT_SIGN_IN_REQUIRED_MESSAGE,
   CHATGPT_EFFORT_CONTROL_SELECTOR,
   CHATGPT_EFFORT_ITEM_SELECTOR,
   CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR,
   CHATGPT_STOP_BUTTON_SELECTOR,
   CHATGPT_TEMPORARY_CHAT_URL,
   CHATGPT_USER_TURN_SELECTOR,
+  isChatGptSignInPage,
   activateChatGptEffortMenu,
   detectChatGptAccountCapabilities,
   parseChatGptEffortSliderState,
@@ -2660,10 +2662,12 @@ export class ChatGptBrowserWorker {
       });
       await captureDiagnostic?.("temporary-chat-navigation-complete");
     }
+    if (isChatGptSignInPage(page.url())) throw new Error(CHATGPT_SIGN_IN_REQUIRED_MESSAGE);
     let composer: Locator;
     try {
       composer = await this.activeComposer(page);
     } catch {
+      if (isChatGptSignInPage(page.url())) throw new Error(CHATGPT_SIGN_IN_REQUIRED_MESSAGE);
       throw new Error("ChatGPT web login is expired or the Temporary Chat surface is unavailable");
     }
     if (await dismissChatGptTemporaryChatOnboarding(page)) {
