@@ -908,6 +908,40 @@ test("launcher authentication requires the Temporary Chat composer and complete 
   assert.equal(result.status, "ready");
 });
 
+test("launcher recognizes only the current owned markdown composer with a valid session", async () => {
+  const vm = require("node:vm");
+  const url = "https://chatgpt.com/?temporary-chat=true";
+  const composerSelector = 'form[data-chatgpt-composer] [data-composer-markdown][contenteditable="true"][role="textbox"]';
+  const fixture = {
+    state: { authenticated: false }, activeTraceId: null, manualOperation: null,
+    view: { webContents: {
+      isDestroyed: () => false, getURL: () => url,
+      executeJavaScript: async script => vm.runInNewContext(script, {
+        location: { href: url },
+        document: {
+          readyState: "complete",
+          querySelectorAll: selector => selector.includes(composerSelector)
+            ? [{ isConnected: true, getBoundingClientRect: () => ({ width: 100, height: 30 }) }]
+            : [],
+        },
+        getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+        URL, AbortController,
+        fetch: async () => ({
+          ok: true, status: 200, url: "https://chatgpt.com/api/auth/session",
+          headers: { get: () => "application/json" },
+          json: async () => ({ user: { id: "fixture" }, expires: "2099-01-01T00:00:00Z" }),
+        }),
+        setTimeout: () => null, clearTimeout: () => {},
+      }),
+    } },
+    setState(patch) { this.state = { ...this.state, ...patch }; },
+    snapshot() { return { ...this.state }; }, logger: { info() {} },
+  };
+  const result = await BrowserHost.prototype.probeAuthentication.call(fixture);
+  assert.equal(result.status, "ready");
+  assert.equal(result.authenticated, true);
+});
+
 test("session verification distinguishes a missing login from network and invalid-response failures", async () => {
   const vm = require("node:vm");
   const url = "https://chatgpt.com/?temporary-chat=true";

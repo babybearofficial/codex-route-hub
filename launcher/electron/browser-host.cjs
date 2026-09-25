@@ -72,8 +72,7 @@ const COMPOSER_SELECTOR = [
   '[data-testid="prompt-textarea"]',
   "#prompt-textarea",
   '[contenteditable="true"][data-lexical-editor="true"]',
-  '[contenteditable="true"][role="textbox"]',
-  "textarea",
+  'form[data-chatgpt-composer] [data-composer-markdown][contenteditable="true"][role="textbox"]',
 ].join(", ");
 const CHATGPT_VIEWPORT_CSS = `
   html,
