@@ -37,7 +37,7 @@ for (const [path, needle] of expected) {
 }
 for (const path of ["README.md", "README.zh-CN.md", "README.ja.md", "README.ko.md"]) {
   const readme = readFileSync(resolve(root, path), "utf8");
-  if (!readme.startsWith("# Codex Route Hub\n")
+  if (!/^# Codex Route Hub\r?\n/.test(readme)
     || !readme.includes(packageVersion)
     || !readme.includes("https://github.com/babybearofficial/codex-route-hub/releases")) {
     throw new Error(`${path} project identity is not synchronized to ${packageVersion}`);
