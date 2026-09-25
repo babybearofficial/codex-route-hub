@@ -49,6 +49,7 @@ const profileManagerOutput = path.join(launcherRoot, "build", "profile-manager")
 fs.mkdirSync(profileManagerOutput, { recursive: true });
 for (const name of [
   "profile-manager.cjs",
+  "desktop-launch.cjs",
   "named-instance.cjs",
   "accounts.cjs",
   "account-identity.cjs",

@@ -1497,6 +1497,8 @@ async function start() {
           appPath: paths.clientAppPath,
           bundleId: paths.clientBundleId,
           multicodexRoot: manifest.desktopKind === "official" ? null : manifest.multicodexRoot,
+          codexHome: paths.codexHome,
+          clientUserData: paths.clientUserData,
         }) : null,
       onClientRestarted: baseline => {
         if (hubContexts?.activeId === ctx.id) {
@@ -1704,6 +1706,8 @@ async function start() {
         appPath: LAUNCHER_PROFILE.clientAppPath,
         bundleId: LAUNCHER_PROFILE.clientBundleId,
         multicodexRoot: LAUNCHER_PROFILE.multicodexRoot,
+        codexHome: LAUNCHER_PROFILE.codexHome,
+        clientUserData: LAUNCHER_PROFILE.clientUserData,
       }) : null,
     // A controlled Codex restart resets catalog evidence: only a request newer than this
     // baseline proves the reopened client reads models through the proxy.

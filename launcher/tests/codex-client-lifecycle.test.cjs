@@ -14,7 +14,13 @@ test('graceful shutdown readback precedes background reopening of exact target',
   } });
   assert.deepEqual(await client.stop(), { wasRunning: true }); assert.equal(running, false);
   assert.deepEqual(await client.reopen(), { reopened: true });
-  assert.deepEqual(calls.find(([exe]) => exe.endsWith('/open'))[1], ['-g', '-a', '/Applications/ChatGPT.app']);
+  const args = calls.find(([exe]) => exe.endsWith('/open'))[1];
+  const home = require('node:os').homedir();
+  const path = require('node:path');
+  const data = path.join(home, 'Library', 'Application Support', 'Codex');
+  assert.deepEqual(args, ['-g', '--env', `CODEX_HOME=${path.join(home, '.codex')}`,
+    '--env', `CODEX_ELECTRON_USER_DATA_PATH=${data}`,
+    '-a', '/Applications/ChatGPT.app', '--args', `--user-data-dir=${data}`]);
   assert.equal(client.previous, null);
 });
 

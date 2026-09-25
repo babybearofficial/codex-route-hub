@@ -39,6 +39,7 @@ function resolveLauncherProfile({
         userData: named.userData,
         clientAppPath: named.clientAppPath,
         clientBundleId: named.clientBundleId,
+        clientUserData: named.clientUserData,
         browserPartition: "persist:codex-web-gpt-chatgpt",
       };
     }
@@ -52,7 +53,11 @@ function resolveLauncherProfile({
       kind: PRODUCTION_PROFILE,
       displayName: "Codex Route Hub",
       coreHome,
-      codexHome: env.CODEX_HOME?.trim()
+      // A GUI-launched Hub can inherit a clone's CODEX_HOME. Only an explicit
+      // Hub override (or an isolated launcher harness) may select that home.
+      codexHome: env.CODEX_ROUTE_HUB_CODEX_HOME?.trim()
+        ? resolveUserPath(env.CODEX_ROUTE_HUB_CODEX_HOME.trim(), homeDir)
+        : env.CODEX_HOME?.trim() && env.CODEX_WEB_GPT_LAUNCHER_DATA_DIR
         ? resolveUserPath(env.CODEX_HOME.trim(), homeDir)
         : path.join(homeDir, ".codex"),
       userData,

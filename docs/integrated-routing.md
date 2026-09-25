@@ -1,5 +1,7 @@
 # Codex Route Hub — integrated routing fork
 
+Application clones are managed by the independent [MultiCodex project](https://github.com/mahdi-salmanzade/MultiCodex). Route Hub manages browser partitions and routing, and calls the selected application's launch boundary when a route change needs a restart. Each such launch now supplies its own Codex home and desktop browser directory, preventing a Hub started from a clone from passing that clone's login context to the official application. The shared Hub defaults to `~/.codex`; use `CODEX_ROUTE_HUB_CODEX_HOME` for an explicit default-home override. Named instances retain their registered homes.
+
 This fork combines `codex_routing` with Codex Web GPT 5.0.6. The native launcher owns activation, restoration and runtime cleanup. It does not restart Codex App.
 
 ## Entry points

@@ -2,13 +2,14 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const path = require('node:path');
 const { refreshCodexBackend } = require('./codex-backend-refresh.cjs');
+const { desktopLaunch } = require('./desktop-launch.cjs');
 
 const execute = promisify(execFile);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 class CodexClientLifecycle {
   constructor({ appPath = '/Applications/ChatGPT.app', bundleId = 'com.openai.codex',
-    multicodexRoot = null,
+    multicodexRoot = null, codexHome, clientUserData,
     run = execute, pause = sleep, now = Date.now } = {}) {
     if (!path.isAbsolute(appPath)) throw new Error('Codex client application path must be absolute');
     if (typeof bundleId !== 'string' || !/^[A-Za-z0-9._-]+$/.test(bundleId)) {
@@ -17,7 +18,7 @@ class CodexClientLifecycle {
     if (multicodexRoot !== null && !path.isAbsolute(multicodexRoot)) {
       throw new Error('MultiCodex profile root must be absolute');
     }
-    Object.assign(this, { appPath, bundleId, multicodexRoot, run, pause, now });
+    Object.assign(this, { appPath, bundleId, multicodexRoot, codexHome, clientUserData, run, pause, now });
     this.previous = null;
   }
 
@@ -72,11 +73,9 @@ class CodexClientLifecycle {
   async reopen({ recovery = false, ifPrevious = recovery } = {}) {
     if (ifPrevious && !this.previous) return { reopened: false };
     // open -g preserves focus. Wait for actual process readback, not just exit 0.
-    await this.run('/usr/bin/open', [
-      '-g', ...(this.bundleId === 'com.openai.codex' ? [] : ['-n']),
-      ...(this.multicodexRoot ? ['--env', `MULTICODEX_ROOT=${this.multicodexRoot}`] : []),
-      '-a', this.appPath,
-    ], { timeout: 15_000, maxBuffer: 64 * 1024 });
+    const launch = desktopLaunch(this);
+    await this.run('/usr/bin/open', launch.args,
+      { env: launch.env, timeout: 15_000, maxBuffer: 64 * 1024 });
     const deadline = this.now() + 20_000;
     while (!await this.inspect()) {
       if (this.now() >= deadline) throw new Error('Codex launch was requested but its process did not appear');

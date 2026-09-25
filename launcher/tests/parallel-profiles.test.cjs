@@ -155,6 +155,7 @@ test("client lifecycle targets the exact cloned path and bundle ID", async () =>
     appPath: "/Users/tester/Applications/Codex work.app",
     bundleId: "local.multicodex.work",
     multicodexRoot: "/Users/tester/.multicodex/profiles",
+    clientUserData: "/Users/tester/Library/Application Support/MultiCodex/work",
     run: async (exe, args) => {
       calls.push([exe, args]);
       if (exe.endsWith("osascript")) return { stdout: running ? '{"pid":42}' : "null" };
@@ -169,8 +170,11 @@ test("client lifecycle targets the exact cloned path and bundle ID", async () =>
   assert.match(script, /Codex work\.app/);
   assert.doesNotMatch(script, /===\s*'com\.openai\.codex'/);
   assert.deepEqual(calls.find(([exe]) => exe.endsWith("open"))[1], [
-    "-g", "-n", "--env", "MULTICODEX_ROOT=/Users/tester/.multicodex/profiles",
-    "-a", "/Users/tester/Applications/Codex work.app",
+    "-g", "-n", "--env", `CODEX_HOME=${path.join("/Users/tester/.multicodex/profiles", "work")}`,
+    "--env", "CODEX_ELECTRON_USER_DATA_PATH=/Users/tester/Library/Application Support/MultiCodex/work",
+    "--env", "MULTICODEX_ROOT=/Users/tester/.multicodex/profiles",
+    "-a", "/Users/tester/Applications/Codex work.app", "--args",
+    "--user-data-dir=/Users/tester/Library/Application Support/MultiCodex/work",
   ]);
 });
 

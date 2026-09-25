@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const { assertMatchingAccount, authAccountKey } = require("./account-identity.cjs");
+const { desktopLaunch, hubLaunchEnvironment } = require("./desktop-launch.cjs");
 const { assertActiveTunnelBinding, createAccountStore } = require("./accounts.cjs");
 const {
   MAX_PORT, MIN_PORT, createInstance, instancePaths, instanceRoot,
@@ -264,11 +265,12 @@ async function main(args = process.argv.slice(2), env = process.env) {
     if (!fs.existsSync(path.join(hubApp, "Contents", "Resources", "profile-manager", "named-instance.cjs"))) {
       throw new Error("Installed Codex Route Hub does not contain named-instance support; install the updated app first");
     }
-    run("/usr/bin/open", ["-g",
-      ...(profile.desktopKind === "official" ? [] : ["--env", `MULTICODEX_ROOT=${profile.multicodexRoot}`]),
-      "-a", profile.clientAppPath], { env });
+    const launch = desktopLaunch({ appPath: profile.clientAppPath, bundleId: profile.clientBundleId,
+      codexHome: profile.codexHome, clientUserData: profile.clientUserData,
+      multicodexRoot: profile.multicodexRoot, env });
+    run("/usr/bin/open", launch.args, { env: launch.env });
     run("/usr/bin/open", ["-g", "--env", `CODEX_ROUTE_HUB_INSTANCES_ROOT=${root}`,
-      "-a", hubApp, "--args", "--profile-manager-launch", "--hidden"], { env });
+      "-a", hubApp, "--args", "--profile-manager-launch", "--hidden"], { env: hubLaunchEnvironment(env) });
     process.stdout.write(`Background launch requested for ${name} and the shared Route Hub\n`);
     return;
   }

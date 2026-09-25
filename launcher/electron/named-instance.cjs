@@ -81,6 +81,8 @@ function instancePaths(root, name, {
     clientAppPath: desktopKind === "official" ? "/Applications/ChatGPT.app"
       : path.join(homeDir, "Applications", `Codex ${name}.app`),
     clientBundleId: desktopKind === "official" ? "com.openai.codex" : `local.multicodex.${name}`,
+    clientUserData: path.join(homeDir, "Library", "Application Support",
+      ...(desktopKind === "official" ? ["Codex"] : ["MultiCodex", name])),
     desktopKind,
   };
 }
