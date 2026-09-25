@@ -5,8 +5,8 @@ editing Codex configuration, or opening a new issue.
 
 ## The first five minutes
 
-1. Install the [latest release](https://github.com/miuuyy/codex-chatgpt-web/releases/latest). Quit
-   **Codex Web GPT** before running the installer again; updating preserves its private ChatGPT
+1. Install the [latest Codex Route Hub release](https://github.com/babybearofficial/codex-route-hub/releases) when available. Quit
+   **Codex Route Hub** before running the installer again; updating preserves its private ChatGPT
    profile and launcher configuration.
 2. In the launcher, confirm that ChatGPT sign-in, the browser smoke test, and **Install models** (or
    **Repair Codex setup**) are green.
@@ -204,7 +204,7 @@ does not provide credentials or additional allowance for native Image Gen.
 
 ## Update, repair, and remove
 
-To update, quit **Codex Web GPT** and run the same installer command from the README. The installer
+To update, quit **Codex Route Hub** and run the same installer command from the README. The installer
 replaces the application and runtime while preserving the launcher configuration and private
 ChatGPT profile.
 

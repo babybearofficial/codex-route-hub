@@ -38,26 +38,30 @@ function requireFile(filePath, label) {
 }
 
 function updateMac(job) {
-  const sourceExecutable = path.join(job.source, "Contents", "MacOS", "Codex Web GPT");
+  const sourceExecutable = path.join(job.source, "Contents", "MacOS", "Codex Route Hub");
   requireFile(sourceExecutable, "Staged macOS launcher");
   const next = `${job.target}.updating-${process.pid}`;
   const previous = `${job.target}.swap-${process.pid}`;
   fs.rmSync(next, { recursive: true, force: true });
   fs.rmSync(previous, { recursive: true, force: true });
-  const copied = spawnSync("/usr/bin/ditto", [job.source, next], { encoding: "utf8", timeout: 180_000 });
-  if (copied.error) throw copied.error;
-  if (copied.status !== 0) throw new Error(`Could not stage the macOS application: ${copied.stderr.trim()}`);
-  requireFile(path.join(next, "Contents", "MacOS", "Codex Web GPT"), "Copied macOS launcher");
-
-  fs.renameSync(job.target, previous);
   try {
-    fs.renameSync(next, job.target);
-  } catch (error) {
-    fs.renameSync(previous, job.target);
-    throw error;
+    const copied = spawnSync("/usr/bin/ditto", [job.source, next], { encoding: "utf8", timeout: 180_000 });
+    if (copied.error) throw copied.error;
+    if (copied.status !== 0) throw new Error(`Could not stage the macOS application: ${copied.stderr.trim()}`);
+    requireFile(path.join(next, "Contents", "MacOS", "Codex Route Hub"), "Copied macOS launcher");
+
+    fs.renameSync(job.target, previous);
+    try {
+      fs.renameSync(next, job.target);
+    } catch (error) {
+      fs.renameSync(previous, job.target);
+      throw error;
+    }
+    fs.rmSync(previous, { recursive: true, force: true });
+    launch("/usr/bin/open", [job.target]);
+  } finally {
+    fs.rmSync(next, { recursive: true, force: true });
   }
-  fs.rmSync(previous, { recursive: true, force: true });
-  launch("/usr/bin/open", [job.target]);
 }
 
 function updateWindows(job) {
@@ -124,20 +128,21 @@ async function main() {
   const jobPath = process.argv[2];
   if (!jobPath || !path.isAbsolute(jobPath)) throw new Error("Update worker requires an absolute job path");
   const job = JSON.parse(fs.readFileSync(jobPath, "utf8"));
-  appendLog(job, `waiting for launcher PID ${job.parentPid} before installing v${job.version}`);
-  await waitForParent(job.parentPid);
-  appendLog(job, `installing v${job.version} on ${job.platform}`);
   try {
+    appendLog(job, `waiting for launcher PID ${job.parentPid} before installing v${job.version}`);
+    await waitForParent(job.parentPid);
+    appendLog(job, `installing v${job.version} on ${job.platform}`);
     if (job.platform === "darwin") updateMac(job);
     else if (job.platform === "win32") updateWindows(job);
     else if (job.platform === "linux") updateLinux(job);
     else throw new Error(`Unsupported update platform: ${job.platform}`);
     appendLog(job, `v${job.version} installed and relaunched`);
-    try { fs.rmSync(job.tempRoot, { recursive: true, force: true }); } catch {}
   } catch (error) {
     appendLog(job, `update failed: ${error instanceof Error ? error.stack || error.message : String(error)}`);
     relaunchExisting(job);
     throw error;
+  } finally {
+    try { fs.rmSync(job.tempRoot, { recursive: true, force: true }); } catch {}
   }
 }
 

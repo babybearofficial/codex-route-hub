@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-REPOSITORY="${CODEX_WEB_GPT_REPOSITORY:-babybearofficial/codex-chatgpt-web}"
+REPOSITORY="${CODEX_WEB_GPT_REPOSITORY:-babybearofficial/codex-route-hub}"
 VERSION="${CODEX_WEB_GPT_VERSION:-}"
 OS="$(uname -s)"
 MACHINE="$(uname -m)"
@@ -97,6 +97,18 @@ if [ "$OS" = "Darwin" ]; then
     if [ -e "$BACKUP_APP" ]; then mv "$BACKUP_APP" "$TARGET_APP"; fi
     exit 1
   fi
+  # Older manual installs left full-size application copies beside the active bundle.
+  # Remove only directories with this project's exact bundle identity after replacement succeeds.
+  for STALE_APP in "$INSTALL_DIR"/Codex\ Route\ Hub.previous-*.app "$INSTALL_DIR"/Codex\ Route\ Hub.app.backup-*; do
+    [ -d "$STALE_APP" ] && [ ! -L "$STALE_APP" ] || continue
+    STALE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$STALE_APP/Contents/Info.plist" 2>/dev/null || true)"
+    [ "$STALE_ID" = "dev.babybear.codexroutehub" ] || continue
+    if rm -rf "$STALE_APP"; then
+      echo "Removed old launcher copy: $STALE_APP"
+    else
+      echo "Could not remove old launcher copy: $STALE_APP" >&2
+    fi
+  done
   echo "Installed $TARGET_APP"
   open "$TARGET_APP"
   exit 0

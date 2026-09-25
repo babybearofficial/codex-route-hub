@@ -1,16 +1,8 @@
-<p align="center">
-  <img src="assets/readme/hero.svg" width="960" alt="Web モデルに切り替えても、Codex はそのまま。ChatGPT のプラン。いつものワークフロー。モデルの力を最大限に。">
-</p>
+# Codex Route Hub
 
-<p align="center">
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-mac-arm64.dmg"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
-</p>
+複数アカウントと複数ブリッジに対応した独立した Codex ルーティングプロジェクト。[Codex Web GPT](https://github.com/miuuyy/codex-chatgpt-web) を基に開発し、MIT ライセンスと帰属表示を保持しています。
 
-<p align="center">
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-mac-x64.dmg">macOS Intel</a> · <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/latest">すべてのリリース</a>
-</p>
+**ソース版:** 5.0.9。独立したバイナリは[リリース](https://github.com/babybearofficial/codex-route-hub/releases)で公開予定です。それまではソースからビルドしてください。
 
 <p align="center">
   <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a>
@@ -21,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="#get-started">使い始める</a> · <a href="https://github.com/miuuyy/codex-chatgpt-web/releases">更新内容</a> · <a href="docs/architecture.md">アーキテクチャ</a> · <a href="TROUBLESHOOTING.md">トラブルシューティング</a>
+  <a href="#get-started">使い始める</a> · <a href="https://github.com/babybearofficial/codex-route-hub/releases">更新内容</a> · <a href="docs/architecture.md">アーキテクチャ</a> · <a href="TROUBLESHOOTING.md">トラブルシューティング</a>
 </p>
 
 アカウントで利用可能な Pro を含む ChatGPT Web モデルを、Codex のネイティブモデル選択画面から使えます。ChatGPT Web の独立した利用枠を使うため、Work や Codex の利用枠は消費しません。UI、タスク、画像、ストリーミングはそのままです。
@@ -34,7 +26,7 @@ Full ハーネスモードでは、MCP を通じて ChatGPT を現在のタス�
 
 **利用可能なモデル：** Free/Go → **Luna / Think**。推論コントロールがあるアカウント → **Instant～High** に加え、利用可能な場合に **Extra High** と **Pro**。ランチャーがアカウントの利用可能なモデルを検出します。
 
-1. **ランチャーをインストール**：上のボタンから、お使いの OS 向けのアプリをダウンロードします。
+1. **ランチャーをインストール**：独立版の公開後、リリースページから OS に合ったアプリをダウンロードします。
 2. **ChatGPT にサインイン**：内蔵ブラウザーでログインし、ブラウザーのスモークテストを実行します。
 3. **モデルをインストール**：Codex を一度再起動し、**ChatGPT Web — …** モデルを選択します。
 4. **ツールを使って開発する場合**：ランチャーの **MCP** を開き、下記の Full ハーネス設定を完了します。
@@ -44,18 +36,18 @@ Full ハーネスモードでは、MCP を通じて ChatGPT を現在のタス�
 <details>
 <summary><strong>ターミナルからのインストール・更新・修復</strong></summary>
 
-更新前にランチャーを終了してください。以下のインストーラーは OS とアーキテクチャを選択し、公開チェックサムを検証します。ChatGPT プロファイルとランチャー設定は保持されます。
+更新前にランチャーを終了してください。独立版の公開後、以下のインストーラーは OS とアーキテクチャを選択し、公開チェックサムを検証します。ChatGPT プロファイルとランチャー設定は保持されます。
 
 **macOS / Linux**
 
 ```bash
-curl -fsSL https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.sh | sh
+curl -fsSL https://github.com/babybearofficial/codex-route-hub/releases/latest/download/install-launcher.sh | sh
 ```
 
 **Windows PowerShell**
 
 ```powershell
-irm https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.ps1 | iex
+irm https://github.com/babybearofficial/codex-route-hub/releases/latest/download/install-launcher.ps1 | iex
 ```
 
 </details>
@@ -165,8 +157,8 @@ Full モードを有効にする前に、完全な[アーキテクチャ](docs/a
 <a id="development"></a>
 
 ```bash
-git clone https://github.com/miuuyy/codex-chatgpt-web.git && \
-cd codex-chatgpt-web && \
+git clone https://github.com/babybearofficial/codex-route-hub.git && \
+cd codex-route-hub && \
 bun run app
 ```
 
@@ -186,16 +178,6 @@ bun run app:package
 
 </details>
 
-## Star の履歴
-
-<a href="https://www.star-history.com/?repos=miuuyy%2Fcodex-chatgpt-web&type=date&legend=top-left">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=miuuyy/codex-chatgpt-web&type=date&theme=dark&legend=top-left&sealed_token=hBVvg_eOjfMFDrfyeo5FPQkIwcvBEmXc6F7ZoOKnfFE4KPCs67o34w4XwVuM-bHGnKR-SKCAN_TSTWrzuqSBNU-RjNZCLT4f-xNs9qcDhciQtemxHKuuFj0N5YNqZIihdaQfakrh2ANhOrvP0K2LmLXX2zbsYyVaYZknyTnlYeIS_mOGvMcO32ZmPCHK">
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=miuuyy/codex-chatgpt-web&type=date&legend=top-left&sealed_token=hBVvg_eOjfMFDrfyeo5FPQkIwcvBEmXc6F7ZoOKnfFE4KPCs67o34w4XwVuM-bHGnKR-SKCAN_TSTWrzuqSBNU-RjNZCLT4f-xNs9qcDhciQtemxHKuuFj0N5YNqZIihdaQfakrh2ANhOrvP0K2LmLXX2zbsYyVaYZknyTnlYeIS_mOGvMcO32ZmPCHK">
-    <img alt="Star 履歴チャート" src="https://api.star-history.com/chart?repos=miuuyy/codex-chatgpt-web&type=date&legend=top-left&sealed_token=hBVvg_eOjfMFDrfyeo5FPQkIwcvBEmXc6F7ZoOKnfFE4KPCs67o34w4XwVuM-bHGnKR-SKCAN_TSTWrzuqSBNU-RjNZCLT4f-xNs9qcDhciQtemxHKuuFj0N5YNqZIihdaQfakrh2ANhOrvP0K2LmLXX2zbsYyVaYZknyTnlYeIS_mOGvMcO32ZmPCHK">
-  </picture>
-</a>
-
 ---
 
 これは独立したソフトウェアであり、OpenAI との提携や OpenAI による推奨を受けたものではありません。
@@ -204,8 +186,6 @@ bun run app:package
 
 ## ルーティング統合版
 
-この fork は統合スイッチを追加し、無効化時に有効化前の Codex 設定を復元します。[統合説明](docs/integrated-routing.md)をご覧ください。
+Codex Route Hub は統合スイッチを追加し、無効化時に有効化前の Codex 設定を復元します。[統合説明](docs/integrated-routing.md)をご覧ください。
 
-[トラブルシューティング](TROUBLESHOOTING.md) · [セキュリティ](SECURITY.md) · [コントリビューション](CONTRIBUTING.md) · [MIT ライセンス](LICENSE) · [CI](https://github.com/miuuyy/codex-chatgpt-web/actions/workflows/ci.yml)
-
-もう一つの自作アプリ：<img src="assets/readme/persona-voice.svg" width="20" height="20" alt=""> [ChatGPT Persona Voice](https://github.com/miuuyy/ChatGPT-Persona-Voice) — ChatGPT と Codex に、ローカルでほぼリアルタイムのカスタム音声を。
+[トラブルシューティング](TROUBLESHOOTING.md) · [セキュリティ](SECURITY.md) · [コントリビューション](CONTRIBUTING.md) · [MIT ライセンス](LICENSE) · [CI](https://github.com/babybearofficial/codex-route-hub/actions/workflows/ci.yml)

@@ -1,5 +1,5 @@
 name: Bug report
-description: Report one reproducible Codex Web GPT failure with fresh privacy-safe diagnostics.
+description: Report one reproducible Codex Route Hub failure with fresh privacy-safe diagnostics.
 title: "[Bug] "
 labels:
   - bug
@@ -7,14 +7,14 @@ body:
   - type: markdown
     attributes:
       value: |
-        Please read [Troubleshooting](https://github.com/miuuyy/codex-chatgpt-web/blob/main/TROUBLESHOOTING.md), update to the latest release, and reproduce the failure once before filing.
+        Please read [Troubleshooting](https://github.com/babybearofficial/codex-route-hub/blob/main/TROUBLESHOOTING.md), update to the latest available version, and reproduce the failure once before filing.
         Never upload cookies, browser storage, API keys, Tunnel IDs, raw launcher logs, or unredacted Codex prompts/tool output.
 
   - type: input
     id: launcher-version
     attributes:
-      label: Codex Web GPT version
-      description: Use the version shown by the launcher or release installer, not "latest".
+      label: Codex Route Hub version
+      description: Use the version shown by the launcher or package manifest, not "latest".
       placeholder: x.y.z
     validations:
       required: true
@@ -133,7 +133,7 @@ body:
     attributes:
       label: Preflight checklist
       options:
-        - label: I tested the latest release and, for catalog or turn failures, fully restarted Codex including its background process.
+        - label: I tested the latest available version and, for catalog or turn failures, fully restarted Codex including its background process.
           required: true
         - label: I stated whether the failure also occurs in a fresh Codex task, or explained why that does not apply.
           required: true

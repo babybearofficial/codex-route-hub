@@ -42,10 +42,10 @@ test("release comparison and platform assets are strict", () => {
   assert.equal(compareVersions("1.1.4", "1.1.4"), 0);
   assert.equal(compareVersions("1.1.3", "1.1.4"), -1);
   assert.equal(compareVersions("1.2.0", "1.1.99"), 1);
-  assert.equal(releaseAssetName("1.2.0", "darwin", "arm64"), "codex-web-gpt-1.2.0-mac-arm64.zip");
-  assert.equal(releaseAssetName("1.2.0", "darwin", "x64"), "codex-web-gpt-1.2.0-mac-x64.zip");
-  assert.equal(releaseAssetName("1.2.0", "win32", "x64"), "codex-web-gpt-1.2.0-win-x64.exe");
-  assert.equal(releaseAssetName("1.2.0", "linux", "x64"), "codex-web-gpt-1.2.0-linux-x64.AppImage");
+  assert.equal(releaseAssetName("1.2.0", "darwin", "arm64"), "codex-route-hub-1.2.0-mac-arm64.zip");
+  assert.equal(releaseAssetName("1.2.0", "darwin", "x64"), "codex-route-hub-1.2.0-mac-x64.zip");
+  assert.equal(releaseAssetName("1.2.0", "win32", "x64"), "codex-route-hub-1.2.0-win-x64.exe");
+  assert.equal(releaseAssetName("1.2.0", "linux", "x64"), "codex-route-hub-1.2.0-linux-x64.AppImage");
   assert.equal(releaseAssetName("1.2.0", "linux", "arm64"), null);
 });
 
@@ -55,24 +55,48 @@ test("checksums and release URLs bind the exact expected asset", () => {
   assert.throws(() => expectedChecksum(`${hash}  other.zip\n`, "launcher.zip"), /no entry/);
   assert.equal(
     validateReleaseAssetUrl(
-      "https://github.com/miuuyy/codex-chatgpt-web/releases/download/v1.2.0/launcher.zip",
+      "https://github.com/babybearofficial/codex-route-hub/releases/download/v1.2.0/launcher.zip",
       "1.2.0",
       "launcher.zip",
     ),
-    "https://github.com/miuuyy/codex-chatgpt-web/releases/download/v1.2.0/launcher.zip",
+    "https://github.com/babybearofficial/codex-route-hub/releases/download/v1.2.0/launcher.zip",
   );
   assert.throws(
     () => validateReleaseAssetUrl("https://example.com/launcher.zip", "1.2.0", "launcher.zip"),
+    /unexpected release asset URL/,
+  );
+  assert.throws(
+    () => validateReleaseAssetUrl("https://github.com/miuuyy/codex-chatgpt-web/releases/download/v1.2.0/launcher.zip", "1.2.0", "launcher.zip"),
     /unexpected release asset URL/,
   );
 });
 
 test("macOS bundle resolution never guesses outside Contents/MacOS", () => {
   assert.equal(
-    macApplicationPath("/Applications/Codex Web GPT.app/Contents/MacOS/Codex Web GPT"),
-    "/Applications/Codex Web GPT.app",
+    macApplicationPath("/Applications/Codex Route Hub.app/Contents/MacOS/Codex Route Hub"),
+    "/Applications/Codex Route Hub.app",
   );
-  assert.throws(() => macApplicationPath("/tmp/Codex Web GPT"), /Could not resolve/);
+  assert.throws(() => macApplicationPath("/tmp/Codex Route Hub"), /Could not resolve/);
+});
+
+test("macOS update accepts the Codex Route Hub executable in its staged bundle", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "route-hub-mac-stage-"));
+  try {
+    const stagedApp = path.join(root, "Codex Route Hub.app");
+    const executable = path.join(stagedApp, "Contents", "MacOS", "Codex Route Hub");
+    fs.mkdirSync(path.dirname(executable), { recursive: true });
+    fs.writeFileSync(executable, "fixture");
+    const job = buildJob({
+      version: "5.0.9", platform: "darwin",
+      executablePath: "/Applications/Codex Route Hub.app/Contents/MacOS/Codex Route Hub",
+      assetPath: "/tmp/route-hub.zip", stagingRoot: root,
+      tempRoot: "/tmp/route-hub-update", logPath: "/tmp/route-hub-update.log",
+    });
+    assert.equal(job.source, stagedApp);
+    assert.equal(job.target, "/Applications/Codex Route Hub.app");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("startup check runs once and exposes only a newer complete release", async () => {
@@ -94,12 +118,12 @@ test("startup check runs once and exposes only a newer complete release", async 
           tag_name: "v1.2.0",
           assets: [
             {
-              name: "codex-web-gpt-1.2.0-linux-x64.AppImage",
-              browser_download_url: "https://github.com/miuuyy/codex-chatgpt-web/releases/download/v1.2.0/codex-web-gpt-1.2.0-linux-x64.AppImage",
+              name: "codex-route-hub-1.2.0-linux-x64.AppImage",
+              browser_download_url: "https://github.com/babybearofficial/codex-route-hub/releases/download/v1.2.0/codex-route-hub-1.2.0-linux-x64.AppImage",
             },
             {
               name: "checksums.txt",
-              browser_download_url: "https://github.com/miuuyy/codex-chatgpt-web/releases/download/v1.2.0/checksums.txt",
+              browser_download_url: "https://github.com/babybearofficial/codex-route-hub/releases/download/v1.2.0/checksums.txt",
             },
           ],
         };
@@ -110,6 +134,18 @@ test("startup check runs once and exposes only a newer complete release", async 
   assert.deepEqual(await controller.checkOnce(), { status: "available", version: "1.2.0" });
   assert.equal(calls, 1);
   assert.deepEqual(published.map((state) => state.status), ["checking", "available"]);
+});
+
+test("a new standalone repository without releases leaves updater disabled", async () => {
+  const controller = createUpdateController({
+    currentVersion: "5.0.9", platform: "darwin", arch: "arm64", packaged: true,
+    executablePath: "/Applications/Codex Route Hub.app/Contents/MacOS/Codex Route Hub",
+    runtimeExecutable: "/tmp/bun", logsDirectory: "/tmp/logs",
+    dependencies: {
+      fetchRelease: async () => { throw Object.assign(new Error("Update download failed with HTTP 404"), { statusCode: 404 }); },
+    },
+  });
+  assert.deepEqual(await controller.checkOnce(), { status: "disabled" });
 });
 
 test("verified update is handed to one detached worker", async () => {
@@ -141,16 +177,16 @@ test("verified update is handed to one detached worker", async () => {
           tag_name: "v1.2.0",
           assets: [
             {
-              name: "codex-web-gpt-1.2.0-linux-x64.AppImage",
-              browser_download_url: "https://github.com/miuuyy/codex-chatgpt-web/releases/download/v1.2.0/codex-web-gpt-1.2.0-linux-x64.AppImage",
+              name: "codex-route-hub-1.2.0-linux-x64.AppImage",
+              browser_download_url: "https://github.com/babybearofficial/codex-route-hub/releases/download/v1.2.0/codex-route-hub-1.2.0-linux-x64.AppImage",
             },
             {
               name: "checksums.txt",
-              browser_download_url: "https://github.com/miuuyy/codex-chatgpt-web/releases/download/v1.2.0/checksums.txt",
+              browser_download_url: "https://github.com/babybearofficial/codex-route-hub/releases/download/v1.2.0/checksums.txt",
             },
           ],
         }),
-        downloadText: async () => `${hash}  codex-web-gpt-1.2.0-linux-x64.AppImage\n`,
+        downloadText: async () => `${hash}  codex-route-hub-1.2.0-linux-x64.AppImage\n`,
         downloadFile: async (_url, destination) => fs.writeFileSync(destination, assetBody),
         sha256: (filePath) => require("node:crypto").createHash("sha256").update(fs.readFileSync(filePath)).digest("hex"),
         spawnWorker: (runtime, worker, job) => {
@@ -229,6 +265,33 @@ test("detached worker replaces an installed Linux AppImage and removes the old v
     }
     assert.equal(fs.readFileSync(marker, "utf8"), "launched");
     assert.match(fs.readFileSync(logPath, "utf8"), /installed and relaunched/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("failed detached update removes its downloaded and extracted staging files", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "launcher-worker-cleanup-test-"));
+  const tempRoot = path.join(root, "update");
+  const logPath = path.join(root, "update-worker.log");
+  fs.mkdirSync(tempRoot);
+  fs.writeFileSync(path.join(tempRoot, "large-staged-file"), "staged");
+  const jobPath = path.join(tempRoot, "job.json");
+  fs.writeFileSync(jobPath, JSON.stringify({
+    version: "1.2.0",
+    platform: "unsupported",
+    parentPid: 2_147_483_647,
+    tempRoot,
+    logPath,
+  }));
+  try {
+    const result = spawnSync(process.execPath, [path.join(__dirname, "..", "electron", "update-worker.cjs"), jobPath], {
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(result.status, 1);
+    assert.equal(fs.existsSync(tempRoot), false);
+    assert.match(fs.readFileSync(logPath, "utf8"), /update failed/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

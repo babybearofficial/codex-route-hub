@@ -1,9 +1,8 @@
 # Contributing
 
-Codex Web GPT was created and is primarily developed and maintained by
-[@miuuyy](https://github.com/miuuyy). Product direction, core architecture, and release decisions
-remain with the creator. Other contributors listed by GitHub have provided focused external fixes
-rather than shared product or architectural ownership.
+Codex Route Hub is maintained independently by [@babybearofficial](https://github.com/babybearofficial).
+It is based on [Codex Web GPT](https://github.com/miuuyy/codex-chatgpt-web), created by
+[@miuuyy](https://github.com/miuuyy), and retains the original MIT license and attribution.
 
 External contributions are welcome, but this is an intentionally maintainer-led project. Pull
 requests are expected to be small, focused, and easy to review and verify. Good contributions
@@ -11,12 +10,12 @@ include isolated bug fixes, regression tests, documentation corrections, and nar
 platform-specific fixes.
 
 Before opening a bug report, work through [TROUBLESHOOTING.md](TROUBLESHOOTING.md) and use the
-structured issue form. Reproduce once on the latest release and attach the privacy-safe export from
+structured issue form. Reproduce once on the latest available version and attach the privacy-safe export from
 **Activity → Export safe log**; never upload raw browser state, credentials, or unredacted logs.
 
 Large feature branches, broad refactors, rewrites, new providers, and changes to core behavior or
 architecture are generally not accepted. In rare cases they may be considered, but discuss the
-proposal in [Ideas](https://github.com/miuuyy/codex-chatgpt-web/discussions/categories/ideas) before
+proposal in [Discussions](https://github.com/babybearofficial/codex-route-hub/discussions) before
 implementation. Feature requests belong there; issues track bugs. Prior discussion does not
 guarantee acceptance, and a large unsolicited pull request may be closed even when substantial
 work went into it.
