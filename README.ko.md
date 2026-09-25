@@ -2,7 +2,7 @@
 
 여러 계정과 여러 브리지를 지원하는 독립적인 Codex 라우팅 프로젝트입니다. [Codex Web GPT](https://github.com/miuuyy/codex-chatgpt-web)를 기반으로 하며 MIT 라이선스와 저작자 표시를 유지합니다.
 
-**소스 버전:** 5.0.10. 독립 실행 파일은 [릴리스 페이지](https://github.com/babybearofficial/codex-route-hub/releases)에 게시됩니다. 그전에는 소스에서 빌드하세요.
+**소스 버전:** 5.0.11. 독립 실행 파일은 [릴리스 페이지](https://github.com/babybearofficial/codex-route-hub/releases)에 게시됩니다. 그전에는 소스에서 빌드하세요.
 
 <p align="center">
   <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a>

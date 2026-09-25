@@ -1,6 +1,6 @@
 {
   "name": "codex-route-hub-launcher",
-  "version": "5.0.10",
+  "version": "5.0.11",
   "private": true,
   "description": "Integrated Codex routing and ChatGPT runtime control",
   "author": "babybearofficial",
