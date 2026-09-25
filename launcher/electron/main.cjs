@@ -1838,6 +1838,7 @@ async function start() {
     } else {
       browserHost.destroy();
       await browserControl.close();
+      routeExitGuard?.release();
     }
     mainWindow.destroy();
     app.quit();
