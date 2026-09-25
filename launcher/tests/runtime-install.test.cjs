@@ -7,9 +7,33 @@ const path = require("node:path");
 const { runtimeInvocation } = require("../electron/runtime-command.cjs");
 const {
   ensurePackagedRuntime,
+  pruneStaleRuntimeVersions,
   validateRuntimeBundle,
   waitForPackagedRuntimeSource,
 } = require("../electron/runtime-install.cjs");
+
+test("runtime cleanup removes only stale bundles for the active platform and architecture", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "route-hub-runtime-prune-"));
+  try {
+    const active = `5.0.9-${process.platform}-${process.arch}`;
+    const stale = `5.0.8-${process.platform}-${process.arch}`;
+    const differentArch = `5.0.8-${process.platform}-otherarch`;
+    for (const name of [active, stale, differentArch, "custom-data"]) {
+      fs.mkdirSync(path.join(root, name));
+      fs.writeFileSync(path.join(root, name, "marker"), name);
+    }
+    fs.symlinkSync(path.join(root, stale), path.join(root, `5.0.7-${process.platform}-${process.arch}`));
+    const result = pruneStaleRuntimeVersions(root, active, process.platform, process.arch);
+    assert.deepEqual(result.removed, [stale]);
+    assert.deepEqual(result.failed, []);
+    assert.equal(fs.existsSync(path.join(root, active)), true);
+    assert.equal(fs.existsSync(path.join(root, differentArch)), true);
+    assert.equal(fs.existsSync(path.join(root, "custom-data")), true);
+    assert.equal(fs.lstatSync(path.join(root, `5.0.7-${process.platform}-${process.arch}`)).isSymbolicLink(), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 function comparePaths(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;

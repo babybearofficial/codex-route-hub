@@ -183,6 +183,24 @@ function validateRuntimeBundle(runtimeRoot, identity) {
   return inspectRuntimeBundle(runtimeRoot, identity).runtimeRoot;
 }
 
+function pruneStaleRuntimeVersions(versionsRoot, activeName, platform, arch) {
+  const removed = [];
+  const failed = [];
+  if (!fs.existsSync(versionsRoot)) return { removed, failed };
+  const versionName = new RegExp(`^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?-${platform}-${arch}$`);
+  for (const entry of fs.readdirSync(versionsRoot, { withFileTypes: true })) {
+    if (entry.name === activeName || !versionName.test(entry.name) || !entry.isDirectory()) continue;
+    const candidate = path.join(versionsRoot, entry.name);
+    try {
+      fs.rmSync(candidate, { recursive: true, force: true });
+      removed.push(entry.name);
+    } catch (error) {
+      failed.push({ name: entry.name, error });
+    }
+  }
+  return { removed, failed };
+}
+
 async function waitForPackagedRuntimeSource({
   app,
   resourcesPath,
@@ -232,7 +250,9 @@ function ensurePackagedRuntime({ app, coreHome, resourcesPath }) {
   );
   if (fs.existsSync(destination)) {
     try {
-      return validateRuntimeBundle(destination, expectedIdentity);
+      const runtimeRoot = validateRuntimeBundle(destination, expectedIdentity);
+      pruneStaleRuntimeVersions(versionsRoot, path.basename(destination), identity.platform, identity.arch);
+      return runtimeRoot;
     } catch {
       // A terminated installer or external cleanup can leave a version directory present but
       // incomplete. Rebuild the launcher-owned bundle transactionally from the signed package.
@@ -285,11 +305,14 @@ function ensurePackagedRuntime({ app, coreHome, resourcesPath }) {
     }
   }
   try { fs.chmodSync(destination, 0o700); } catch {}
-  return validateRuntimeBundle(destination, expectedIdentity);
+  const runtimeRoot = validateRuntimeBundle(destination, expectedIdentity);
+  pruneStaleRuntimeVersions(versionsRoot, path.basename(destination), identity.platform, identity.arch);
+  return runtimeRoot;
 }
 
 module.exports = {
   ensurePackagedRuntime,
+  pruneStaleRuntimeVersions,
   validateRuntimeBundle,
   waitForPackagedRuntimeSource,
 };
