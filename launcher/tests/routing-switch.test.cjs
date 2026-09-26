@@ -650,7 +650,7 @@ test('sync restarts Codex and reports only an observed catalog request as succes
     const payload = w.supervisor.proxyHealthPayload;
     w.supervisor.proxyHealthPayload = async () => { observations += 1; if (observations >= 4) w.health.successful_model_catalog_requests = 11; return payload(); };
     const result = await w.control.sync();
-    assert.deepEqual(w.calls.slice(before), ['quit-client', 'open-client']);
+    assert.deepEqual(w.calls.slice(before), ['quit-client', 'setup', 'connect', 'open-client']);
     assert.equal(result.last.status, 'synced');
     assert.equal(result.catalogVerified, true);
     assert.equal(w.restarted.length, 2);
@@ -677,6 +677,24 @@ test('sync refuses to proceed when Codex declines to quit or the route is not in
     await assert.rejects(w.control.sync(), /未指向本地代理/);
     assert.equal(w.control.inFlight, null);
   } finally { w.cleanup(); }
+});
+
+test('sync reopens only its owned client when account capability refresh fails', async () => {
+  const w = world({ client: true });
+  const peer = world({ client: true });
+  try {
+    await w.control.setEnabled(true);
+    await peer.control.setEnabled(true);
+    const peerBefore = peer.calls.length;
+    w.host.setupCore = async () => { throw new Error('capability inspection failed'); };
+    await assert.rejects(w.control.sync(), /capability inspection failed/);
+    assert.equal(w.codex.running, true);
+    assert.equal(w.routeActive(), true);
+    assert.equal(w.isReady(), true);
+    assert.equal(w.control.inFlight, null);
+    assert.deepEqual(peer.calls.slice(peerBefore), []);
+    assert.equal(peer.codex.running, true);
+  } finally { w.cleanup(); peer.cleanup(); }
 });
 
 test('sync without a client controller recovers the runtime and asks for a manual restart', async () => {
