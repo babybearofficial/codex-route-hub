@@ -34,61 +34,122 @@ export function isNativeInterruptedTurnResume(
   identity: ChatGptTurnIdentity,
   source: ChatGptTurnUserRevision,
 ): boolean {
+  const entries = nativeRootReplayRecords(codexHome, identity, source);
+  if (!entries) return false;
+  let sourceFound = false, interrupted = false, started = false, context = false;
+  for (const entry of entries) {
+    const payload = record(entry?.payload);
+    if (!payload) continue;
+    if (entry?.type === "response_item" && payload.role === "user") {
+      const metadata = record(payload.internal_chat_message_metadata_passthrough);
+      if (payload.id === source.itemId) {
+        sourceFound = metadata?.turn_id === source.turnId && isDeepStrictEqual(payload.content, source.content);
+      } else if (sourceFound && !nativeReplayContextualUser(metadata)) return false;
+    }
+    if (entry?.type === "event_msg" && sourceFound) {
+      if (payload.type === "turn_aborted" && payload.turn_id === source.turnId && !started) interrupted = true;
+      if (payload.type === "task_started") {
+        if (!interrupted || payload.turn_id !== identity.turnId || started) return false;
+        started = true;
+      }
+      if (started && ["turn_aborted", "task_complete"].includes(String(payload.type))) return false;
+    }
+    if (entry?.type === "turn_context" && started) {
+      if (payload.turn_id !== identity.turnId) return false;
+      context = true;
+    }
+  }
+  return sourceFound && interrupted && started && context;
+}
+
+/** Codex retries a capacity-failed task under a fresh turn without repeating the human item. */
+export function isNativeCapacityRetry(
+  codexHome: string,
+  identity: ChatGptTurnIdentity,
+  source: ChatGptTurnUserRevision,
+): boolean {
+  const entries = nativeRootReplayRecords(codexHome, identity, source);
+  if (!entries || identity.turnId === source.turnId) return false;
+  let sourceFound = false, failed = false, started = false, context = false;
+  for (const entry of entries) {
+    const payload = record(entry?.payload);
+    if (!payload) continue;
+    if (entry?.type === "response_item" && sourceFound) {
+      if (payload.role === "user") {
+        if (!nativeReplayContextualUser(record(payload.internal_chat_message_metadata_passthrough), false)) return false;
+      } else if (payload.type !== "message" || !["developer", "system"].includes(String(payload.role))) {
+        // A partially answered task must not be replayed as a fresh instruction.
+        return false;
+      }
+    } else if (entry?.type === "response_item" && payload.type === "message" && payload.role === "user"
+      && payload.id === source.itemId) {
+      const metadata = record(payload.internal_chat_message_metadata_passthrough);
+      if (sourceFound || metadata?.turn_id !== source.turnId
+        || !isDeepStrictEqual(payload.content, source.content)) return false;
+      sourceFound = true;
+    }
+    if (entry?.type === "event_msg" && sourceFound) {
+      if (payload.type === "task_complete") {
+        const error = record(payload.error);
+        if (failed || payload.turn_id !== source.turnId || error?.codex_error_info !== "server_overloaded"
+          || payload.last_agent_message != null) return false;
+        failed = true;
+      } else if (payload.type === "task_started") {
+        if (!failed || payload.turn_id !== identity.turnId || started) return false;
+        started = true;
+      } else if (payload.type === "turn_aborted" || payload.type === "agent_message") {
+        return false;
+      }
+    }
+    if (entry?.type === "turn_context" && started) {
+      if (payload.turn_id !== identity.turnId) return false;
+      context = true;
+    }
+  }
+  return sourceFound && failed && started && context;
+}
+
+function nativeReplayContextualUser(metadata?: Record<string, unknown>, allowAbort = true): boolean {
+  const kinds = metadata?.content_item_kinds;
+  return Array.isArray(kinds) && kinds.length > 0 && kinds.every(kind => [
+    ...(allowAbort ? ["generic.turn_aborted"] : []),
+    "plugins.recommendations", "agents_md.instructions", "environments.environment_context",
+  ].includes(String(kind)));
+}
+
+function nativeRootReplayRecords(
+  codexHome: string,
+  identity: ChatGptTurnIdentity,
+  source: ChatGptTurnUserRevision,
+): Record<string, unknown>[] | undefined {
   if (!identity.threadId || !identity.turnId || !source.turnId || !source.itemId
     || identity.parentThreadId || identity.subagentKind
-    || ![identity.threadId, identity.turnId, source.turnId].every(id => CODEX_ID.test(id))) return false;
+    || ![identity.threadId, identity.turnId, source.turnId].every(id => CODEX_ID.test(id))) return undefined;
   const lineage: ChatGptRootThreadMetadata = { threadId: identity.threadId, sandboxType: "platform", workspaceRoots: [] };
   try {
     const indexed = indexedRollout(configuredSqliteHome(codexHome), lineage);
     const candidates = indexed.kind === "found" ? [indexed.path] : scanCanonicalRollouts(codexHome, identity.threadId);
-    if (candidates.length !== 1) return false;
+    if (candidates.length !== 1) return undefined;
     const file = validateRolloutPath(codexHome, candidates[0]!, identity.threadId);
     const fd = openSync(file, "r");
     try {
       const size = fstatSync(fd).size;
       validateSessionMeta(firstRolloutRecord(fd, size), lineage);
-      if (latestTurnContext(fd, size)?.turn_id !== identity.turnId) return false;
+      if (latestTurnContext(fd, size)?.turn_id !== identity.turnId) return undefined;
       // Bounded tail; a source outside this window cannot authorize an automatic resume.
       const length = Math.min(size, 16 * 1024 * 1024);
       const tail = Buffer.alloc(length);
-      if (readSync(fd, tail, 0, length, size - length) !== length) return false;
+      if (readSync(fd, tail, 0, length, size - length) !== length) return undefined;
       const lines = tail.toString("utf8").split("\n");
       if (length < size) lines.shift();
       lines.pop(); // Ignore an incomplete trailing record, including a concurrent append.
-      let sourceFound = false, interrupted = false, started = false, context = false;
-      for (const line of lines) {
-        if (!line) continue;
+      return lines.filter(Boolean).map(line => {
         const entry = record(JSON.parse(line));
-        const payload = record(entry?.payload);
-        if (!payload) continue;
-        if (entry?.type === "response_item" && payload.role === "user") {
-          const metadata = record(payload.internal_chat_message_metadata_passthrough);
-          if (payload.id === source.itemId) {
-            sourceFound = metadata?.turn_id === source.turnId && isDeepStrictEqual(payload.content, source.content);
-          } else if (sourceFound) {
-            const kinds = metadata?.content_item_kinds;
-            // Only native contextual records may follow the original instruction.
-            if (!Array.isArray(kinds) || kinds.length === 0 || kinds.some(kind => ![
-              "generic.turn_aborted", "plugins.recommendations", "agents_md.instructions", "environments.environment_context",
-            ].includes(String(kind)))) return false;
-          }
-        }
-        if (entry?.type === "event_msg" && sourceFound) {
-          if (payload.type === "turn_aborted" && payload.turn_id === source.turnId && !started) interrupted = true;
-          if (payload.type === "task_started") {
-            if (!interrupted || payload.turn_id !== identity.turnId || started) return false;
-            started = true;
-          }
-          if (started && ["turn_aborted", "task_complete"].includes(String(payload.type))) return false;
-        }
-        if (entry?.type === "turn_context" && started) {
-          if (payload.turn_id !== identity.turnId) return false;
-          context = true;
-        }
-      }
-      return sourceFound && interrupted && started && context;
+        if (!entry) throw new Error("Codex rollout replay record is invalid");
+        return entry;
+      });
     } finally { closeSync(fd); }
-  } catch { return false; }
+  } catch { return undefined; }
 }
 
 const CODEX_ID_SOURCE = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isNativeInterruptedTurnResume } from "../src/adapters/chatgpt-web/codex-rollout-environment";
+import { isNativeCapacityRetry, isNativeInterruptedTurnResume } from "../src/adapters/chatgpt-web/codex-rollout-environment";
 import { extractChatGptTurnUserRevision } from "../src/adapters/chatgpt-web/environment";
 import { parseRequest } from "../src/responses/parser";
 
@@ -54,4 +54,61 @@ test("repeated checks release rollout descriptors and never retain an authorizat
   for (let i = 0; i < 50; i++) expect(isNativeInterruptedTurnResume(home, { threadId, turnId }, source)).toBe(true);
   write([...records(), event("turn_aborted", turnId)]);
   expect(isNativeInterruptedTurnResume(home, { threadId, turnId }, source)).toBe(false);
+}));
+
+const capacityFailure = {
+  type: "event_msg", payload: {
+    type: "task_complete", turn_id: oldTurn, last_agent_message: null,
+    error: { message: "Selected model is at capacity", codex_error_info: "server_overloaded" },
+  },
+};
+const capacityRecords = () => [
+  { type: "session_meta", payload: { id: threadId, source: "vscode" } },
+  event("task_started", oldTurn),
+  { type: "response_item", payload: message },
+  capacityFailure,
+  event("thread_settings_applied", oldTurn),
+  event("task_started", turnId),
+  { type: "response_item", payload: { type: "message", role: "developer", content: [] } },
+  { type: "turn_context", payload: { turn_id: turnId } },
+];
+
+test("native capacity retry reuses only the failed task's exact human instruction", () => fixture((home, write) => {
+  write(capacityRecords());
+  expect(isNativeCapacityRetry(home, { threadId, turnId }, source)).toBe(true);
+  const previous = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = home;
+  try {
+    const parsed = parseRequest({
+      model: "chatgpt-web/pro", input: [message],
+      client_metadata: { "x-codex-turn-metadata": JSON.stringify({ thread_id: threadId, turn_id: turnId }) },
+    });
+    expect(extractChatGptTurnUserRevision(parsed)).toEqual(source.content);
+  } finally { if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous; }
+}));
+
+test("capacity retry rejects unrelated failure, prior output, new instruction and expired turn", () => fixture((home, write) => {
+  const identity = { threadId, turnId };
+  const base = capacityRecords();
+  const replaceFailure = (error: unknown) => base.map(row => row === capacityFailure
+    ? { ...capacityFailure, payload: { ...capacityFailure.payload, error } } : row);
+  for (const rows of [
+    replaceFailure(undefined),
+    replaceFailure({ codex_error_info: "other" }),
+    base.filter(row => row !== capacityFailure),
+    [...base, event("task_complete", turnId)],
+    [...base, { type: "response_item", payload: { ...message, id: "new_user" } }],
+    [...base.slice(0, 3), { type: "response_item", payload: { type: "message", role: "assistant", content: [] } }, ...base.slice(3)],
+    [...base.slice(0, 3), { type: "event_msg", payload: { type: "agent_message", turn_id: oldTurn } }, ...base.slice(3)],
+    [...base.slice(0, 3), { type: "response_item", payload: { type: "function_call", name: "tool" } }, ...base.slice(3)],
+    [...base.slice(0, 3), event("turn_aborted", oldTurn), ...base.slice(3)],
+  ]) {
+    write(rows);
+    expect(isNativeCapacityRetry(home, identity, source)).toBe(false);
+  }
+  write(base);
+  expect(isNativeCapacityRetry(home, identity, { ...source, content: "altered" })).toBe(false);
+  expect(isNativeCapacityRetry(home, identity, { ...source, itemId: "wrong" })).toBe(false);
+  expect(isNativeCapacityRetry(home, { ...identity, parentThreadId: threadId }, source)).toBe(false);
+  expect(isNativeCapacityRetry(join(home, "missing"), identity, source)).toBe(false);
 }));
