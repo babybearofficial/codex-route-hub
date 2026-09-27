@@ -2,6 +2,8 @@
 
 Independent Codex routing with multiple accounts and multiple ChatGPT bridges. This project is based on [Codex Web GPT](https://github.com/miuuyy/codex-chatgpt-web) and retains its MIT license and attribution.
 
+See the [upstream feature adoption inventory (中文)](docs/upstream-features.zh-CN.md) for source versions, local adaptations, deferred changes and verification.
+
 **Source version:** 5.0.12. Independent binary releases will appear on the [Releases page](https://github.com/babybearofficial/codex-route-hub/releases); until then, build from source.
 
 <p align="center">

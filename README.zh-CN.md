@@ -2,6 +2,8 @@
 
 独立维护的 Codex 多账号、多桥接路由项目。项目基于 [Codex Web GPT](https://github.com/miuuyy/codex-chatgpt-web) 二次开发，并保留原项目的 MIT 许可与署名。
 
+上游功能的采用范围、来源版本、本项目适配及验证状态见[上游功能采用清单](docs/upstream-features.zh-CN.md)。
+
 **源码版本：** 5.0.12。独立安装包发布后会出现在[发布页](https://github.com/babybearofficial/codex-route-hub/releases)；在此之前请从源码构建。
 
 <p align="center">
