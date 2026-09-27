@@ -43,3 +43,9 @@ Final integration is performed in the independent repository at `/Users/wickedmc
 After the merge, all 37 installed launcher source modules are accounted for. The only differences are the intentional browser-host viewport and routing-switch capability-refresh repairs. The earlier incomplete archive in the legacy checkout was deleted.
 
 Final source verification from the canonical repository passed: 767 root tests / 9 skipped; 415 launcher tests / 1 skipped; both audits, version synchronization, type checks, renderer build and relocatable runtime smoke.
+
+The final macOS arm64 archive was rebuilt from this repository. All 37 packaged launcher modules and the three checked profile-manager launch modules match source. Deep/strict signature validation and isolated startup passed; the latter used an empty instance registry and disabled client restarts. The startup marker verifies 5.0.12 and the packaged durable runtime.
+
+One local smoke run completed startup but encountered an `ENOTEMPTY` cleanup race with an exit guard's final log. The test script now allows five bounded removal retries. Direct Node execution of that same smoke completed with exit code 0 and `PACKAGED_LAUNCHER_SMOKE_OK darwin/arm64`; no scratch directories remained. Packaging contract checks passed (10 passed / 1 platform skip). This script change does not change the application archive.
+
+Application commit `7e10bad` passed all four jobs in [CI](https://github.com/babybearofficial/codex-route-hub/actions/runs/36300605295), including verification, packaging and packaged smoke on macOS, Linux and Windows. The final archive and its SHA-256 file are under the canonical repository's `launcher/artifacts` directory. The installed 5.0.11 app and live routes are unchanged.

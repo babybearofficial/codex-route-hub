@@ -151,6 +151,7 @@ try {
       run(launchServices, ["-gc"]);
     }
   } finally {
-    fs.rmSync(scratch, { recursive: true, force: true });
+    // A just-released exit guard can finish its final log while its scratch home is removed.
+    fs.rmSync(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 }
