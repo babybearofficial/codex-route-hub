@@ -2,7 +2,9 @@
 
 複数アカウントと複数ブリッジに対応した独立した Codex ルーティングプロジェクト。[Codex Web GPT](https://github.com/miuuyy/codex-chatgpt-web) を基に開発し、MIT ライセンスと帰属表示を保持しています。
 
-**ソース版:** 5.0.11。独立したバイナリは[リリース](https://github.com/babybearofficial/codex-route-hub/releases)で公開予定です。それまではソースからビルドしてください。
+採用した機能、参照バージョン、独自の変更点、見送った変更と検証状況は[上流機能の採用一覧（中国語）](docs/upstream-features.zh-CN.md)をご覧ください。
+
+**ソース版:** 5.0.12。独立したバイナリは[リリース](https://github.com/babybearofficial/codex-route-hub/releases)で公開予定です。それまではソースからビルドしてください。
 
 <p align="center">
   <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a>

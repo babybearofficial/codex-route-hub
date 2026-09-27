@@ -722,6 +722,44 @@ test("hidden turn tabs receive an explicit renderer viewport before moving offsc
   assert.equal(tab.deviceEmulationDirty, false);
 });
 
+test("hidden primary checks retain a renderer viewport across resize and navigation, then restore native bounds", () => {
+  const calls = [];
+  let size = [1120, 720];
+  const fixture = Object.assign(Object.create(BrowserHost.prototype), {
+    primaryRendererReady: false, primaryDeviceEmulationDirty: true,
+    primaryDeviceEmulationViewport: null,
+    bounds: { x: 280, y: 64, width: 840, height: 656 },
+    window: { getContentSize: () => size },
+    view: {
+      setBounds: value => calls.push(["bounds", value]), setVisible: value => calls.push(["visible", value]),
+      webContents: {
+        enableDeviceEmulation: value => calls.push(["emulate", value.viewSize]),
+        disableDeviceEmulation: () => calls.push(["disable"]),
+      },
+    },
+  });
+  fixture.presentPrimaryView(false);
+  assert.equal(calls.some(([event]) => event === "emulate"), false);
+  fixture.primaryRendererReady = true;
+  fixture.presentPrimaryView(false);
+  assert.deepEqual(calls.slice(-3), [["emulate", { width: 1120, height: 720 }],
+    ["bounds", { x: 1121, y: 721, width: 1120, height: 720 }], ["visible", true]]);
+  fixture.presentPrimaryView(false);
+  assert.equal(calls.filter(([event]) => event === "emulate").length, 1);
+  fixture.primaryDeviceEmulationDirty = true;
+  fixture.presentPrimaryView(false);
+  size = [1280, 800];
+  fixture.presentPrimaryView(false);
+  assert.deepEqual(fixture.primaryDeviceEmulationViewport, { width: 1280, height: 800 });
+  assert.equal(calls.filter(([event]) => event === "emulate").length, 3);
+  fixture.presentPrimaryView(true);
+  assert.deepEqual(calls.slice(-3), [["bounds", fixture.bounds], ["disable"], ["visible", true]]);
+  assert.equal(fixture.primaryDeviceEmulationViewport, null);
+  fixture.getBrowserInteractionMode = () => "manual";
+  fixture.presentPrimaryView(false);
+  assert.equal(calls.filter(([event]) => event === "emulate").length, 3);
+});
+
 test("turn tabs use the hidden viewport when the launcher window is hidden", () => {
   const events = [];
   const tab = {

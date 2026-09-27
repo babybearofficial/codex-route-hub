@@ -558,9 +558,8 @@ class RoutingSwitch {
     }
   }
 
-  // "Sync now": make the running Codex adopt the effective catalog and prove it. Verification
-  // is a catalog request observed at the proxy after the controlled restart, not a refreshed
-  // status card.
+  // Refresh this account's browser capability evidence before Codex reads its catalog again.
+  // RuntimeHost owns checkpoint/rollback and keeps the instance's port, profile and tunnel.
   async performSync() {
     if (this.store.read().routingDisabled === true) throw new Error('路由已停用；请先启动路由，再同步模型');
     this.publishOperation?.({ name: 'routing-sync', status: 'running', message: '正在核对本地代理与 Codex 路由…' });
@@ -574,18 +573,40 @@ class RoutingSwitch {
       if (!observed.proxyHealthy) throw new Error('本地代理未响应健康检查');
     }
     this.startKeeper();
-    if (!this.client) {
-      this.update({ codexRestartRequired: true, codexCatalogVerified: false });
-      this.last = { ok: true, status: 'restart-required', message: '路由与代理正常；请手动重启 Codex 以重新读取模型目录' };
-      this.publishOperation?.({ name: 'routing-sync', status: 'completed', message: this.last.message });
-      return this.status();
+    await this.ready();
+    await this.preflight();
+    let clientStopped = false;
+    try {
+      if (this.client) {
+        this.publishOperation?.({ name: 'routing-sync', status: 'running', message: '正在正常退出当前账号的 Codex 客户端…' });
+        await this.client.stop();
+        clientStopped = true;
+      }
+      this.publishOperation?.({ name: 'routing-sync', status: 'running', message: '正在重新检测当前 ChatGPT 账号的可用模型…' });
+      await this.host.setupCore();
+      await this.host.connectBridgeRoute();
+      observed = await this.observe();
+      if (observed.runtimeStatus !== 'ready' || !observed.proxyHealthy || observed.routeActive !== true) {
+        throw new Error('模型已检测，但当前账号的代理或路由尚未就绪');
+      }
+      if (!this.client) {
+        this.update({ codexRestartRequired: true, codexCatalogVerified: false });
+        this.last = { ok: true, status: 'restart-required', message: '账号模型已更新；请手动重启 Codex 以重新读取模型目录' };
+        this.publishOperation?.({ name: 'routing-sync', status: 'completed', message: this.last.message });
+        return this.status();
+      }
+      this.publishOperation?.({ name: 'routing-sync', status: 'running', message: '正在后台重新打开 Codex…' });
+      const baseline = this.captureCatalogBaseline(observed);
+      await this.client.reopen();
+      clientStopped = false;
+      try { this.onClientRestarted?.(baseline); } catch (error) { this.logger?.warn?.('routing.client_restart_hook_failed', { message: message(error) }); }
+    } catch (error) {
+      if (clientStopped) {
+        try { await this.client.reopen({ recovery: true }); }
+        catch (recovery) { throw new Error(`${message(error)}; Codex reopen failed: ${message(recovery)}`); }
+      }
+      throw error;
     }
-    this.publishOperation?.({ name: 'routing-sync', status: 'running', message: '正在正常退出 ChatGPT.app（Codex 客户端）…' });
-    await this.client.stop();
-    this.publishOperation?.({ name: 'routing-sync', status: 'running', message: '正在后台重新打开 Codex…' });
-    const baseline = this.captureCatalogBaseline(observed);
-    await this.client.reopen();
-    try { this.onClientRestarted?.(baseline); } catch (error) { this.logger?.warn?.('routing.client_restart_hook_failed', { message: message(error) }); }
     this.publishOperation?.({ name: 'routing-sync', status: 'running', message: '等待 Codex 通过本地代理重新读取模型目录…' });
     const deadline = this.now() + CATALOG_SYNC_TIMEOUT_MS;
     for (;;) {

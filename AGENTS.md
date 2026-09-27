@@ -2,6 +2,7 @@
 
 - Canonical checkout: `/Users/wickedmc/all_codes/codex-route-hub`, an independent Git repository. Do not implement or build this project from the legacy `codex-chatgpt-web` checkout or its worktrees.
 - Desktop account isolation: resolve both the Codex home and desktop browser data directory from the selected application. Never inherit another profile's identity at launch, and never repair an account mismatch by copying another account's credentials.
+- Current repair boundary (2026-09-27): the user authorized compiling the remaining fixes while leaving live routes unchanged. Build and test with isolated profiles; application installation, route changes and client restarts are deferred until a later explicit activation request.
 
 - This independent project integrates `codex_routing` into the native launcher. Keep runtime ownership in the launcher; Python is a compatibility client.
 - Implement code first, then test. Do not compile/build/package Node.js, TypeScript or Rust without explicit user permission. Direct `.cjs` Node tests and Python tests are allowed; never invoke build hooks implicitly.

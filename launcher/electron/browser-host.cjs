@@ -387,6 +387,9 @@ class BrowserHost {
     this.cloudflareChallengeRecoveryDelayMs = CLOUDFLARE_CHALLENGE_RECOVERY_DELAY_MS;
     this.cloudflareChallengeRecoverySettleMs = CLOUDFLARE_CHALLENGE_RECOVERY_SETTLE_MS;
     this.viewportCssKey = null;
+    this.primaryRendererReady = false;
+    this.primaryDeviceEmulationViewport = null;
+    this.primaryDeviceEmulationDirty = true;
     this.shellZoomShortcutBindings = new Map();
     this.authView = null;
     this.authNavigationError = null;
@@ -1014,6 +1017,8 @@ class BrowserHost {
         this.setState({ url });
         return;
       }
+      this.primaryRendererReady = false;
+      this.primaryDeviceEmulationDirty = true;
       this.armHomeNavigationTimeout(contents, url);
       if (this.manualOperation === "ChatGPT login") {
         this.logger.info("browser.auth_navigation_started", {
@@ -1027,6 +1032,8 @@ class BrowserHost {
     });
     contents.on("did-finish-load", () => {
       this.clearHomeNavigationTimeout();
+      this.primaryRendererReady = true;
+      this.syncViewVisibility();
       if (this.manualOperation === "ChatGPT login") {
         this.logger.info("browser.auth_navigation_completed", {
           surface: "primary",
@@ -1573,7 +1580,26 @@ class BrowserHost {
     // the native View can make Windows drop it from the remote-debugging target set, leaving a
     // live descriptor whose ownership id cannot be leased. Keep the View attached and drawable
     // offscreen; only its placement, never its ownership lifetime, follows the launcher UI.
-    this.view.setBounds(visible ? this.bounds : this.hiddenTurnBounds());
+    const automatic = browserInteractionModeFor(this) === "automatic";
+    const bounds = visible ? this.bounds : this.hiddenTurnBounds();
+    if (visible || !automatic) {
+      this.view.setBounds(bounds);
+      if (this.primaryRendererReady && this.primaryDeviceEmulationViewport) {
+        this.view.webContents.disableDeviceEmulation();
+        this.primaryDeviceEmulationViewport = null;
+      }
+      if (this.primaryRendererReady) this.primaryDeviceEmulationDirty = false;
+    } else {
+      if (this.primaryRendererReady
+        && (this.primaryDeviceEmulationDirty
+          || this.primaryDeviceEmulationViewport?.width !== bounds.width
+          || this.primaryDeviceEmulationViewport?.height !== bounds.height)) {
+        this.enableHiddenTurnViewport(this.view.webContents, bounds);
+        this.primaryDeviceEmulationViewport = { width: bounds.width, height: bounds.height };
+        this.primaryDeviceEmulationDirty = false;
+      }
+      this.view.setBounds(bounds);
+    }
     this.view.setVisible(true);
   }
 

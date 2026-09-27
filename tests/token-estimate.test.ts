@@ -5,6 +5,8 @@ test("counts GPT-5 text with the o200k tokenizer", () => {
   expect(estimateTokens("hello world")).toBe(2);
 });
 
+// The AVX2-independent Windows runtime can take over 5 seconds on shared CI runners.
+// This checks token-count correctness; keep the full input and assertions unchanged.
 test("dense encoded context is not under-counted as prose", () => {
   let state = 0x12345678;
   const bytes = Buffer.allocUnsafe(300_000);
@@ -16,7 +18,7 @@ test("dense encoded context is not under-counted as prose", () => {
 
   expect(encoded.length).toBe(400_000);
   expect(estimateTokens(encoded)).toBeGreaterThan(256_000);
-});
+}, process.platform === "win32" ? 20_000 : 5_000);
 
 test("pathological repeated text is counted in bounded chunks", () => {
   expect(estimateTokens("a".repeat(32_768))).toBe(4_096);
