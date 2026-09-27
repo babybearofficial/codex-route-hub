@@ -4,7 +4,7 @@
 
 上游功能的采用范围、来源版本、本项目适配及验证状态见[上游功能采用清单](docs/upstream-features.zh-CN.md)。
 
-**源码版本：** 5.0.13。独立安装包发布后会出现在[发布页](https://github.com/babybearofficial/codex-route-hub/releases)；在此之前请从源码构建。
+**源码版本：** 5.0.14。独立安装包发布后会出现在[发布页](https://github.com/babybearofficial/codex-route-hub/releases)；在此之前请从源码构建。
 
 <p align="center">
   <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a>

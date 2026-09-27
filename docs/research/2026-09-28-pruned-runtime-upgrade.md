@@ -33,3 +33,13 @@ flowchart TD
 - runtime-layout 与 setup-lifecycle：28 项通过；包含旧运行时已消失时的迁移读取、正常启动拒绝、非法路径拒绝、新命令替换旧命令。
 - 根目录 TypeScript 检查通过。
 - 本轮不修改真实账号配置、不停止或重启现有路由。安装包与本机实际激活验证分别记录，源码验证不代表真实账号已经迁移成功。
+
+## 5.0.14 打包结果
+
+- 两个真实账号配置均以只读方式验证：普通启动复现旧文件缺失，修复后的迁移读取成功；未写回真实配置。
+- macOS arm64 DMG/ZIP 已生成；打包过程的 codesign --verify --deep --strict 与 runtime manifest 校验通过。
+- hdiutil verify：DMG checksum VALID。
+- 隔离启动输出 PACKAGED_LAUNCHER_SMOKE_OK darwin/arm64；测试脚本最后删除临时目录遇到 ENOTEMPTY，整体退出码为 1。确认无关联测试进程后已手工删除本次临时目录。启动断言通过，不能将脚本整体记为成功。
+- 未安装新版、未重启真实客户端；真实账号的迁移和桥接恢复仍待新版实际激活验证。
+- DMG SHA256：ef9edde4834e3fb60b33a8750a848b8a977b2288260bf6611f318fd6d5e1aa26
+- ZIP SHA256：897f19b6f7bb5baa58ae73ae336703160adb81190f38663cb3e6923ca59bd2a5
