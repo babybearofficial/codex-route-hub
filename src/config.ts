@@ -313,6 +313,10 @@ function inside(path: string, root: string): boolean {
 }
 
 export function assertDurableRuntimeCommand(command: string[]): void {
+  validateDurableRuntimeCommand(command, true);
+}
+
+function validateDurableRuntimeCommand(command: string[], requireExecutable: boolean): void {
   if (command.length === 0) throw new Error("Runtime command is empty");
   const executable = command[0]!;
   if (!isAbsolute(executable)) throw new Error(`Runtime executable must be absolute: ${executable}`);
@@ -323,7 +327,7 @@ export function assertDurableRuntimeCommand(command: string[]): void {
       throw new Error(`Runtime command must not reference an ephemeral path: ${part}`);
     }
   }
-  if (!existsSync(executable)) throw new Error(`Runtime executable does not exist: ${executable}`);
+  if (requireExecutable && !existsSync(executable)) throw new Error(`Runtime executable does not exist: ${executable}`);
 }
 
 export function defaultChromeExecutable(
@@ -364,10 +368,13 @@ export function loadConfigForSetup(): AppConfig {
     raw.automaticAppName = CHATGPT_CONNECTOR_NAME;
     if (interactionMode === "automatic") raw.appName = CHATGPT_CONNECTOR_NAME;
   }
-  return parseConfig(raw, path);
+  // Setup replaces runtimeCommand with the currently verified runtime before saving.
+  // An older bundle may already have been pruned during a launcher upgrade.
+  // Keep validating its structure and durability, but do not require that old binary.
+  return parseConfig(raw, path, false);
 }
 
-function parseConfig(value: unknown, path: string): AppConfig {
+function parseConfig(value: unknown, path: string, requireRuntimeExecutable = true): AppConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid configuration object in ${path}`);
   const parsed = value as Partial<AppConfig>;
   if (parsed.version !== 3) throw new Error(`Unsupported configuration version in ${path}; rerun setup to migrate it`);
@@ -483,7 +490,7 @@ function parseConfig(value: unknown, path: string): AppConfig {
     || parsed.runtimeCommand.some(part => typeof part !== "string" || !part.trim())) {
     throw new Error(`Invalid runtimeCommand in ${path}`);
   }
-  assertDurableRuntimeCommand(parsed.runtimeCommand as string[]);
+  validateDurableRuntimeCommand(parsed.runtimeCommand as string[], requireRuntimeExecutable);
   if (parsed.extraHighAvailable !== undefined && typeof parsed.extraHighAvailable !== "boolean") {
     throw new Error(`Invalid extraHighAvailable in ${path}`);
   }

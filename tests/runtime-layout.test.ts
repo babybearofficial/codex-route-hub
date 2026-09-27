@@ -38,6 +38,30 @@ test("managed runtime commands reject every ephemeral path component", () => {
   expect(() => assertDurableRuntimeCommand([process.execPath])).not.toThrow();
 });
 
+test("setup can migrate a pruned runtime without weakening normal startup validation", () => {
+  const root = join(tmpdir(), `route-hub-pruned-runtime-${process.pid}-${Date.now()}`);
+  roots.push(root);
+  mkdirSync(root, { recursive: true });
+  process.env.CODEX_CHATGPT_WEB_HOME = root;
+  const oldExecutable = join(homedir(), `.route-hub-missing-test-${process.pid}`, "runtime", "bun");
+  expect(existsSync(oldExecutable)).toBe(false);
+  const config = {
+    ...defaultConfig("browser-only"),
+    releaseVersion: "5.0.12",
+    runtimeCommand: [oldExecutable],
+  };
+  const configPath = join(root, "config.json");
+  writeFileSync(configPath, JSON.stringify(config));
+  expect(() => loadConfig()).toThrow("Runtime executable does not exist");
+  expect(loadConfigForSetup()).toMatchObject({
+    releaseVersion: "5.0.12", runtimeCommand: [oldExecutable],
+  });
+  for (const runtimeCommand of [["relative/bun"], ["/tmp/deleted-bun"], []]) {
+    writeFileSync(configPath, JSON.stringify({ ...config, runtimeCommand }));
+    expect(() => loadConfigForSetup()).toThrow();
+  }
+});
+
 test("Windows Bun shims resolve to the installed Bun executable before service setup", () => {
   const ephemeralBun = join(tmpdir(), "bun-node-test", "bun");
   expect(runtimeCommandForProcess({

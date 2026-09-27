@@ -61,6 +61,7 @@ test("launcher-authorized release migration preserves legacy capabilities withou
   const existing = {
     ...configModule.defaultConfig("browser-only"),
     releaseVersion: "5.0.6",
+    runtimeCommand: ["/nonexistent-pruned-release/runtime/bun"],
     browserHost: "launcher" as const,
     browserInteractionMode: "automatic" as const,
     browserHostDescriptorPath: join(root, "launcher-browser.json"),
@@ -96,6 +97,7 @@ test("launcher-authorized release migration preserves legacy capabilities withou
       acknowledgedUnofficial: true,
     });
     expect(saved).toMatchObject({
+      runtimeCommand: configModule.currentRuntimeCommand(),
       solAvailable: true,
       extraHighAvailable: false,
       proAvailable: true,
