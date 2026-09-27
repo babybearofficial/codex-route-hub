@@ -1,6 +1,6 @@
 {
   "name": "codex-route-hub",
-  "version": "5.0.12",
+  "version": "5.0.13",
   "private": true,
   "description": "Multi-account Codex routing with launcher-owned ChatGPT bridges and tunnels.",
   "repository": {
