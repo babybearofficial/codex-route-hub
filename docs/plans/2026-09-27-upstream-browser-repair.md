@@ -26,6 +26,7 @@ The maintained feature inventory is [上游功能采用清单](../upstream-featu
 - The archive's nine checked launcher modules match source byte-for-byte, including the new viewport/sync fixes and the account, context, batch bridge, Tunnel, named instance and client lifecycle modules.
 - Removed a 600 MiB isolated staging directory left by an interrupted earlier package smoke after verifying no process still used it. The current package script and smoke both cleaned their own staging.
 - The first remote CI run found that the newly added inventory link was missing from the Japanese and Korean READMEs. Both entry points were added to satisfy the existing cross-language link parity check; application code and the compiled archive are unaffected.
+- The subsequent macOS and Linux CI jobs passed verification, packaging and packaged startup. Windows exposed a pre-existing dense-token correctness test exceeding the default 5-second timeout (6.2 seconds with the baseline runtime). That single Windows test now allows 20 seconds while retaining the same 400,000-character fixture and token-count assertions; production token counting is unchanged.
 
 ## Activation boundary
 
