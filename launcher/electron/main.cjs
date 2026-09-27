@@ -787,9 +787,10 @@ function registerIpc({ logger, stateStore }) {
     return true;
   });
   handle("launcher:browser-surface-active", (_event, active) => browserHost.setSurfaceActive(active === true));
-  handle("launcher:browser-show", () => browserHost.reveal(
-    stateStore.read().browserInteractionMode === "automatic",
-  ));
+  handle("launcher:browser-show", (_event, verification) => {
+    if (verification === true) browserHost.activateHomeSurface();
+    return browserHost.reveal(stateStore.read().browserInteractionMode === "automatic");
+  });
   handle("launcher:browser-hide", () => { browserHost?.hide(); return browserHost?.snapshot(); });
   handle("launcher:browser-navigate", (_event, action) => browserHost.navigate(action));
   handle("launcher:browser-zoom", (_event, action) => browserHost.zoom(action));
@@ -1418,7 +1419,9 @@ async function start() {
     windowStatePath: path.join(app.getPath("userData"), "window-state.json"),
     startHidden,
   });
+  const hubLogger = logger;
   const createNamedContext = async (manifest) => {
+    const logger = hubLogger.child({ accountId: manifest.name });
     const root = instanceRoot();
     const paths = instancePaths(root, manifest.name, {
       multicodexRoot: manifest.multicodexRoot,
@@ -1448,6 +1451,7 @@ async function start() {
     });
     const ctx = {
       id: manifest.name,
+      logger,
       profile: { ...paths, kind: "production", instanceName: manifest.name, instanceRoot: root,
         port: manifest.port, multicodexRoot: manifest.multicodexRoot },
       partition: partitionForInstance(manifest.name),

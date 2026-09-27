@@ -121,3 +121,18 @@ test("a closed Windows diagnostic pipe is recorded without becoming an uncaught 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("account loggers retain their original account across interleaved events and redact secrets", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "route-hub-account-logs-"));
+  try {
+    const logger = createLogger({ filePath: path.join(root, "events.jsonl") });
+    const first = logger.child({ accountId: "first" });
+    const second = logger.child({ accountId: "second" });
+    first.info("runtime.started", { accountId: "spoofed", authorization: "Bearer secret" });
+    second.error("routing.failed", { message: "verification required" });
+    first.warn("runtime.delayed");
+    assert.deepEqual(logger.recent().map(row => row.detail.accountId), ["first", "second", "first"]);
+    assert.equal(logger.recent()[0].detail.authorization, "[redacted]");
+    assert.equal(logger.recent()[2].level, "warning");
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

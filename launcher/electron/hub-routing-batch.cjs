@@ -66,6 +66,7 @@ async function setRoutingBatch(contexts, profileIds, enabled) {
   }
   const results = [];
   for (const { id, context, routingSwitch } of selected) {
+    context.logger?.info("routing.account_action_started", { enabled });
     try {
       if (enabled) await startAccountBridge(context);
       else await routingSwitch.setEnabled(false);
@@ -75,7 +76,10 @@ async function setRoutingBatch(contexts, profileIds, enabled) {
         : !status.enabled && status.routeActive === false;
       results.push({ profileId: id, ok, status,
         ...(ok ? {} : { error: "Bridge state could not be verified after the operation" }) });
+      context.logger?.info("routing.account_action_completed", { enabled, ok });
     } catch (error) {
+      context.logger?.error("routing.account_action_failed", { enabled,
+        message: error instanceof Error ? error.message : String(error) });
       results.push({ profileId: id, ok: false, status: routingSwitch.status(),
         error: redactText(error instanceof Error ? error.message : String(error)) });
     }

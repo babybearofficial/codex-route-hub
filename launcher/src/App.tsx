@@ -510,7 +510,7 @@ function LauncherShell({
     }
   };
 
-  const changeAccount = async (profileId?: string) => {
+  const changeAccount = async (profileId?: string, verification = false) => {
     if (accountSwitchDisabled) return;
     setAccountBusy(true);
     setError(null);
@@ -522,7 +522,7 @@ function LauncherShell({
       setMcpTargetMode(null);
       setSurface("browser");
       await api!.setBrowserSurfaceActive(true);
-      await api!.showBrowser();
+      await api!.showBrowser(verification);
     } catch (cause) {
       setError(messageOf(cause));
     } finally {
@@ -772,7 +772,7 @@ function LauncherShell({
             ) : null}
             {surface === "startup" ? (
               <StartupSurface accounts={snapshot.accounts} operation={operation} logs={logs}
-                disabled={devProfile} onConfigure={() => navigateSurface("setup")} />
+                disabled={devProfile} onOpenAccountBrowser={id => changeAccount(id, true)} onConfigure={() => navigateSurface("setup")} />
             ) : null}
             {surface === "activity" ? (
               <ActivitySurface copy={copy} language={language} logs={logs} setError={setError} />
@@ -1729,7 +1729,7 @@ function ActivitySurface({
           <div className="activity-row" key={`${record.at}-${record.event}-${index}`}>
             <StateDot state={record.level === "error" ? "error" : record.level === "warning" ? "busy" : "ready"} />
             <div>
-              <strong>{humanEvent(record.event)}</strong>
+              <strong>[{String(record.detail.accountId ?? "应用 / 历史未标记")}] {humanEvent(record.event)}</strong>
               <span>{logDetail(record.detail)}</span>
             </div>
             <time>{formatTime(record.at, language)}</time>

@@ -166,6 +166,9 @@ function createLogger({ filePath, publish }) {
   };
 
   return {
+    child: (context) => Object.fromEntries(["debug", "info", "warn", "error"].map(method => [method,
+      (event, detail = {}) => append(method === "warn" ? "warning" : method, event, { ...detail, ...context }),
+    ])),
     debug: (event, detail) => append("debug", event, detail),
     info: (event, detail) => append("info", event, detail),
     warn: (event, detail) => append("warning", event, detail),

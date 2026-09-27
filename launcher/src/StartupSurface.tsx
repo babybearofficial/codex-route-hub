@@ -54,17 +54,19 @@ export function describeRouting(status: RoutingStatus | null): { runtime: string
   return { runtime: runtimeLabel, route, routeDetail, catalog };
 }
 
-export function StartupSurface({ accounts, operation, logs, disabled, onConfigure }: {
+export function StartupSurface({ accounts, operation, logs, disabled, onConfigure, onOpenAccountBrowser }: {
   accounts: AccountListState;
   operation: OperationState | null;
   logs: LogRecord[];
   disabled: boolean;
   onConfigure: () => void;
+  onOpenAccountBrowser: (profileId: string) => Promise<void>;
 }) {
   const [status, setStatus] = useState<RoutingStatus | null>(null);
   const [accountStatuses, setAccountStatuses] = useState<Record<string, RoutingStatus>>({});
   const [selectedIds, setSelectedIds] = useState<string[]>(() => accounts.activeProfileId ? [accounts.activeProfileId] : []);
   const [batchResult, setBatchResult] = useState<RoutingBatchResult | null>(null);
+  const [notices, setNotices] = useState<Array<{ profileId: string; message: string }>>([]);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [automatic, setAutomatic] = useState(() => localStorage.getItem("routing-auto-refresh") !== "false");
@@ -116,8 +118,11 @@ export function StartupSurface({ accounts, operation, logs, disabled, onConfigur
     changing.current = true;
     setPending(true);
     setError(null);
-    try { await action(); }
-    catch (cause) { if (mounted.current) setError(String(cause)); }
+    try {
+      const result = await action();
+      if (result.last?.message) setNotices([{ profileId: accounts.activeProfileId, message: result.last.message }]);
+    }
+    catch (cause) { if (mounted.current) { setError(String(cause)); setNotices([{ profileId: accounts.activeProfileId, message: String(cause) }]); } }
     finally {
       changing.current = false;
       try { await readRouting(); } catch { /* retain action error */ }
@@ -132,9 +137,14 @@ export function StartupSurface({ accounts, operation, logs, disabled, onConfigur
     setBatchResult(null);
     try {
       const result = await api!.setRoutingBulk(selectedIds, enabled);
-      if (mounted.current) setBatchResult(result);
+      if (mounted.current) {
+        setBatchResult(result);
+        setNotices(result.results.filter(item => !item.ok || item.status.last?.status === "degraded").map(item => ({
+          profileId: item.profileId, message: item.error || item.status.last?.message || "桥接状态验证失败",
+        })));
+      }
     } catch (cause) {
-      if (mounted.current) setError(String(cause));
+      if (mounted.current) { setError(String(cause)); setNotices([{ profileId: accounts.activeProfileId, message: String(cause) }]); }
     } finally {
       changing.current = false;
       try { await readRouting(); } catch { /* retain operation result */ }
@@ -215,8 +225,18 @@ export function StartupSurface({ accounts, operation, logs, disabled, onConfigur
     <p className="routing-note">刷新只重读状态。运行时自动恢复由应用管理，不会重新开启已停止的路由；“同步模型”会重启 Codex 并等待它通过代理重新读取模型目录。</p>
     <div role="status" aria-live="polite">{busy ? operation?.message || "正在执行，请稍候…" : status?.last?.message}</div>
     {error ? <p role="alert" className="routing-error">{error}</p> : null}
+    {notices.length > 0 ? <aside className="error-toast account-notice" role="alertdialog" aria-label="账号操作提示">
+      <div>{notices.map((notice, index) => <div key={`${notice.profileId}-${index}`}>
+        <strong>{accountLabel(notice.profileId)}</strong>
+        <p>{notice.message.includes("security verification")
+          ? "该账号被 ChatGPT 安全验证拦截，尚未重启 Codex。请打开该账号浏览器完成验证，再启动桥接。"
+          : notice.message}</p>
+        <button type="button" onClick={() => void onOpenAccountBrowser(notice.profileId)}>打开该账号验证页</button>
+      </div>)}</div>
+      <button type="button" onClick={() => setNotices([])}>关闭</button>
+    </aside> : null}
     <h2>日志</h2>
     <pre className="routing-log" aria-label="启动配置日志">{logs.slice(-300).map(record =>
-      `[${record.at}] ${record.level} ${record.event} ${typeof record.detail?.message === "string" ? record.detail.message.slice(0, 2000) : ""}`).join("\n") || "就绪。等待操作。"}</pre>
+      `[${record.at}] [${typeof record.detail?.accountId === "string" ? accountLabel(record.detail.accountId) : "应用 / 历史未标记"}] ${record.level} ${record.event} ${String(record.detail?.message ?? record.detail?.line ?? "").slice(0, 2000)}`).join("\n") || "就绪。等待操作。"}</pre>
   </div></section>;
 }
