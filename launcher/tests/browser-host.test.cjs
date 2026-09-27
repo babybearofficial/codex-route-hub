@@ -571,6 +571,7 @@ test("session inspection delegates navigation and capability detection to the sh
     getConnectorName: () => "Codex Native2",
     logger: { info() {} },
     view: { webContents: { getURL: () => "https://chatgpt.com/" } },
+    hasReadyTemporaryComposer: async () => false,
     refreshChatGptHomeDocument: async () => calls.push({ operation: "refresh" }),
     runBrowserHelperOperation: async options => {
       calls.push(options);
@@ -612,6 +613,7 @@ test("a failed browser challenge refreshes the stale surface before regular insp
     logger: { info() {} },
     state: { status: "error" },
     view: { webContents: { getURL: () => "https://chatgpt.com/?temporary-chat=true" } },
+    hasReadyTemporaryComposer: async () => false,
     refreshChatGptHomeDocument: async () => calls.push("refresh"),
     runBrowserHelperOperation: async () => ({
       type: "result",
@@ -629,6 +631,7 @@ test("session inspection fails closed on incomplete shared-helper capability evi
     getConnectorName: () => "Codex Native",
     logger: { info() {} },
     view: { webContents: { getURL: () => "https://chatgpt.com/?temporary-chat=true" } },
+    hasReadyTemporaryComposer: async () => true,
     refreshChatGptHomeDocument: async () => {},
     runBrowserHelperOperation: async () => ({
       type: "result",
@@ -1074,7 +1077,7 @@ test("a matching account remains authenticated on its existing conversation or P
     assert.equal(await BrowserHost.prototype.assertBoundAccountIdentity.call(fixture), accountKey);
     assert.equal(fixture.state.authenticated, true);
     fixture.expectedAccountKey = "0".repeat(64);
-    await assert.rejects(BrowserHost.prototype.assertBoundAccountIdentity.call(fixture), /not verified for the selected tunnel/);
+    await assert.rejects(BrowserHost.prototype.assertBoundAccountIdentity.call(fixture), /changed accounts inside this browser profile/);
   }
 });
 
@@ -2244,6 +2247,7 @@ test("manual browser operations disable background throttling until completion",
     activeTraceId: null,
     manualOperation: null,
     activateHomeSurface: () => surfaces.push("home"),
+    syncViewVisibility: () => surfaces.push("viewport"),
     setState() {},
     view: {
       webContents: {
@@ -2256,7 +2260,7 @@ test("manual browser operations disable background throttling until completion",
   const result = await BrowserHost.prototype.withManualOperation.call(fixture, "hidden check", async () => "ok");
 
   assert.equal(result, "ok");
-  assert.deepEqual(surfaces, ["ready", "home"]);
+  assert.deepEqual(surfaces, ["ready", "home", "viewport"]);
   assert.deepEqual(throttling, [false, true]);
   assert.equal(fixture.manualOperation, null);
 });

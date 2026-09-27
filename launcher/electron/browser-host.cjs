@@ -49,7 +49,9 @@ const RETAINED_TURN_TAB_TTL_MS = 30 * 60 * 1000;
 const BROWSER_NAVIGATION_TIMEOUT_MS = 60_000;
 const CHATGPT_AUTH_SESSION_TIMEOUT_MS = 5_000;
 const WINDOW_VISIBILITY_EVENTS = ["show", "hide", "minimize", "restore"];
-const CHATGPT_BACKEND_REQUEST_FILTER = { urls: [`${CHATGPT_ORIGIN}/backend-api/*`] };
+const CHATGPT_SESSION_REQUEST_FILTER = {
+  urls: [`${CHATGPT_ORIGIN}/backend-api/*`, `${CHATGPT_ORIGIN}/api/auth/session*`],
+};
 const ZOOM_FACTORS = [0.5, 0.67, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
 const SHELL_ZOOM_LEVEL_STEP = 0.5;
 const SHELL_ZOOM_LEVEL_LIMIT = 5;
@@ -186,14 +188,15 @@ function isTemporaryChatUrl(value) {
     && parsed.searchParams.get("temporary-chat") === "true";
 }
 
-function isChatGptBackendUrl(value) {
+function isChatGptSessionRequestUrl(value) {
   let parsed;
   try {
     parsed = new URL(value);
   } catch {
     return false;
   }
-  return parsed.origin === CHATGPT_ORIGIN && parsed.pathname.startsWith("/backend-api/");
+  return parsed.origin === CHATGPT_ORIGIN
+    && (parsed.pathname.startsWith("/backend-api/") || parsed.pathname === "/api/auth/session");
 }
 
 function responseHeaderIncludes(responseHeaders, name, expectedValue) {
@@ -209,7 +212,7 @@ function responseHeaderIncludes(responseHeaders, name, expectedValue) {
 
 function isChatGptCloudflareChallengeResponse(details) {
   return details?.statusCode === 403
-    && isChatGptBackendUrl(details.url)
+    && isChatGptSessionRequestUrl(details.url)
     && responseHeaderIncludes(details.responseHeaders, "cf-mitigated", "challenge");
 }
 
@@ -381,6 +384,7 @@ class BrowserHost {
     this.loginOperation = null;
     this.sessionRefreshOperation = null;
     this.cloudflareChallengeRecovery = null;
+    this.cloudflareChallengeRecoverySequence = 0;
     this.cloudflareChallengeRecoveryError = null;
     this.cloudflareChallengeRecoveryArmed = true;
     this.cloudflareChallengePending = false;
@@ -1207,7 +1211,7 @@ class BrowserHost {
 
   bindChatGptBackendRecovery() {
     this.view.webContents.session.webRequest.onCompleted(
-      CHATGPT_BACKEND_REQUEST_FILTER,
+      CHATGPT_SESSION_REQUEST_FILTER,
       details => browserInteractionModeFor(this) === "automatic"
         ? this.handleChatGptBackendResponse(details)
         : undefined,
@@ -1217,7 +1221,7 @@ class BrowserHost {
   handleChatGptBackendResponse(details) {
     const contents = this.view?.webContents;
     if (!contents || contents.isDestroyed() || details?.webContentsId !== contents.id) return false;
-    if (!isChatGptBackendUrl(details.url)) return false;
+    if (!isChatGptSessionRequestUrl(details.url)) return false;
 
     if (details.statusCode >= 200 && details.statusCode < 400) {
       this.cloudflareChallengeRecoveryArmed = true;
@@ -1260,6 +1264,7 @@ class BrowserHost {
     this.cloudflareChallengeRecoveryError = null;
     this.cloudflareChallengePending = false;
     this.logger.warn("browser.cloudflare_challenge_detected", { url: details.url });
+    this.cloudflareChallengeRecoverySequence = (this.cloudflareChallengeRecoverySequence ?? 0) + 1;
     const recovery = this.reloadHomeAfterCloudflareChallenge();
     const tracked = recovery
       .catch((error) => {
@@ -2757,9 +2762,18 @@ class BrowserHost {
     if (!contents.getURL().startsWith(CHATGPT_ORIGIN)) {
       await contents.loadURL(TEMPORARY_CHAT_URL);
     }
-    const checked = await this.probeAuthentication({ requireComposer: false });
+    const recoverySequence = this.cloudflareChallengeRecoverySequence ?? 0;
+    let checked = await this.probeAuthentication({ requireComposer: false });
+    // The session endpoint can be challenged independently of the already usable composer.
+    // Let its account-scoped recovery settle before rejecting the identity or starting a helper.
+    if (this.cloudflareChallengeRecovery || this.cloudflareChallengeRecoveryError
+      || recoverySequence !== (this.cloudflareChallengeRecoverySequence ?? 0)) {
+      await this.waitForCloudflareChallengeRecovery();
+      checked = await this.probeAuthentication({ requireComposer: false });
+    }
     if (!checked.authenticated || !this.expectedAccountKey
       || checked.accountKey !== this.expectedAccountKey) {
+      if (checked.status === "error") throw new Error(checked.message);
       throw new Error("ChatGPT account identity is not verified for the selected tunnel");
     }
     return checked.accountKey;
@@ -2816,7 +2830,9 @@ class BrowserHost {
           if (responseUrl.origin !== expectedUrl.origin || responseUrl.pathname !== "/api/auth/session") {
             sessionCheckError = "ChatGPT session verification received an unexpected response. Check your connection and retry.";
           } else if (response.status !== 401) {
-            if (!response.ok) {
+            if (response.status === 403 && response.headers.get("cf-mitigated")?.toLowerCase() === "challenge") {
+              sessionCheckError = "ChatGPT security verification is blocking this account's session check. Complete the security check in this account's browser and retry.";
+            } else if (!response.ok) {
               sessionCheckError = "ChatGPT session verification failed (HTTP " + response.status + "). Check your connection and retry.";
             } else if (!response.headers.get("content-type")?.includes("application/json")) {
               sessionCheckError = "ChatGPT session verification received an unexpected response. Check your connection and retry.";
@@ -2886,7 +2902,8 @@ class BrowserHost {
       url = this.view.webContents.getURL();
       result = await probe(this.view.webContents);
     }
-    if (result.sessionAuthenticated && (!requireComposer || (result.composer && result.temporary))) {
+    const composerReady = result.composer === true && result.temporary === true;
+    if (result.sessionAuthenticated) {
       if (this.authView && !this.authView.webContents.isDestroyed()) {
         this.closeAuthView(this.authView, true, false);
       }
@@ -2910,7 +2927,13 @@ class BrowserHost {
         this.setState({ status: "error", message: error.message, authenticated: false, accountKey: null, url: result.url });
         return this.snapshot();
       }
-      this.setState({ ...availability, authenticated: true, accountKey: identity.accountKey, url: result.url });
+      this.setState({
+        ...availability,
+        ...(requireComposer && !composerReady ? {
+          status: "loading", message: "ChatGPT is signed in; waiting for this account's chat composer or security check",
+        } : {}),
+        authenticated: true, accountKey: identity.accountKey, url: result.url,
+      });
       if (!wasAuthenticated) this.logger.info("browser.authenticated", { url: result.url });
     } else if (result.sessionCheckError) {
       this.setState({ status: "error", message: result.sessionCheckError, authenticated: false, accountKey: null, url: result.url || url });
@@ -2924,20 +2947,23 @@ class BrowserHost {
         url: result.url || url,
       });
     }
-    return this.snapshot();
+    return { ...this.snapshot(), composerReady };
   }
 
   async waitForAuthenticated(timeoutMs = 180_000) {
     const deadline = Date.now() + timeoutMs;
     let challengeClicked = false;
+    let lastState;
     while (Date.now() < deadline) {
       if (this.authNavigationError) {
         const error = this.authNavigationError;
         this.authNavigationError = null;
         throw error;
       }
+      await this.waitForCloudflareChallengeRecovery();
       const state = await this.probeAuthentication({ requireComposer: true });
-      if (state.authenticated) return state;
+      lastState = state;
+      if (state.authenticated && state.composerReady) return state;
       if (this.accountIdentityError) throw this.accountIdentityError;
       if (!challengeClicked) {
         const challenge = await this.clickCloudflareChallenge(this.authView?.webContents || this.view.webContents,
@@ -2945,6 +2971,10 @@ class BrowserHost {
         challengeClicked = challenge.clicked;
       }
       await sleep(750);
+    }
+    if (lastState?.status === "error") throw new Error(lastState.message);
+    if (lastState?.authenticated) {
+      throw new Error("ChatGPT is signed in, but this account's chat composer is unavailable. Complete any browser security check, then retry model sync.");
     }
     throw new Error("ChatGPT login was not completed before the timeout");
   }
@@ -3053,10 +3083,10 @@ class BrowserHost {
     const initialUrl = this.view.webContents.getURL();
     const startedIdle = initialUrl === IDLE_BROWSER_URL;
     if (this.enforceAccountBinding) await this.assertBoundAccountIdentity();
-    // A failed challenge leaves the primary surface in error. Refresh it before the next
-    // non-capability inspection as well; otherwise the helper would wait on the stale challenged
-    // document until the outer control request timed out.
-    if (detectCapabilities || this.state?.status === "error") await this.refreshChatGptHomeDocument();
+    // Inspect a working, identity-verified account page in place. A mandatory hard reload can
+    // replace its Pro picker with a security challenge and leave the old Luna-only catalog in
+    // place after setup rolls back. Only an unavailable surface needs navigation/recovery.
+    if (!await this.hasReadyTemporaryComposer()) await this.refreshChatGptHomeDocument();
     await this.waitForCloudflareChallengeRecovery();
     const result = await this.runBrowserHelperOperation({
       helper: this.helper,
@@ -3083,6 +3113,17 @@ class BrowserHost {
     return inspected;
   }
 
+  async hasReadyTemporaryComposer() {
+    const contents = this.view?.webContents;
+    if (!contents || contents.isDestroyed() || !isTemporaryChatUrl(contents.getURL())) return false;
+    return contents.executeJavaScript(`(() => {
+      const url = new URL(location.href);
+      return url.origin === ${JSON.stringify(CHATGPT_ORIGIN)} && url.pathname === "/"
+        && url.searchParams.get("temporary-chat") === "true"
+        && Boolean(${visibleElementScript(COMPOSER_SELECTOR)});
+    })()`, true).then(ready => ready === true).catch(() => false);
+  }
+
   async withManualOperation(name, action) {
     await this.ready();
     if (this.activeTraceId) {
@@ -3091,6 +3132,9 @@ class BrowserHost {
     if (this.manualOperation) {
       throw new Error(`ChatGPT browser is already busy with ${this.manualOperation}`);
     }
+    // A completed helper's CDP disconnect can clear Chromium's device metrics while Electron
+    // still remembers them. Reapply this account's hidden viewport for every inspection.
+    this.primaryDeviceEmulationDirty = true;
     this.activateHomeSurface();
     this.manualOperation = name;
     const contents = this.view?.webContents;
@@ -3104,6 +3148,8 @@ class BrowserHost {
     } finally {
       if (contents && !contents.isDestroyed()) contents.setBackgroundThrottling(true);
       this.manualOperation = null;
+      this.primaryDeviceEmulationDirty = true;
+      if (contents && !contents.isDestroyed()) this.syncViewVisibility();
     }
   }
 
